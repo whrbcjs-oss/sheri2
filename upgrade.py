@@ -34,19 +34,49 @@ def upgrade(archive):
     print('다음 단계: setup.bat 실행 → 최초 관리자 생성 → start.bat 실행')
 
 
+def choose_archive(arguments=None, prompt=None):
+    """Support drag/drop, a ZIP beside this script, GUI, then a console path."""
+    arguments = sys.argv[1:] if arguments is None else arguments
+    prompt = input if prompt is None else prompt
+    if arguments:
+        return arguments[0].strip().strip('"')
+    local = ROOT / '통합결산 (3).zip'
+    if local.is_file():
+        print('같은 폴더의 원본 ZIP을 사용합니다: ' + local.name)
+        return str(local)
+    print('원본 ZIP 선택창을 엽니다. 다른 창 뒤에 있으면 Alt+Tab으로 확인하세요.')
+    window = None
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        window = tk.Tk()
+        window.withdraw()
+        window.attributes('-topmost', True)
+        archive = filedialog.askopenfilename(
+            parent=window, title='기존 통합결산 (3).zip을 선택하세요',
+            filetypes=[('ZIP 파일', '*.zip')])
+        if archive:
+            return archive
+    except (ImportError, RuntimeError) as e:
+        print('파일 선택창을 사용할 수 없습니다: ' + str(e))
+    except Exception as e:
+        # TclError is unavailable when tkinter itself cannot be imported.
+        if type(e).__name__ != 'TclError':
+            raise
+        print('파일 선택창을 사용할 수 없습니다: ' + str(e))
+    finally:
+        if window is not None:
+            window.destroy()
+    print('원본 ZIP 파일을 이 검은 창에 끌어다 놓고 Enter를 누르세요.')
+    print('또는 원본 ZIP의 전체 경로를 입력하세요. 빈칸으로 Enter를 누르면 취소합니다.')
+    return prompt('원본 ZIP 경로: ').strip().strip('"')
+
+
 if __name__ == '__main__':
     try:
-        if len(sys.argv) > 1:
-            archive = sys.argv[1]
-        else:
-            import tkinter as tk
-            from tkinter import filedialog
-            window = tk.Tk()
-            window.withdraw()
-            archive = filedialog.askopenfilename(title='기존 통합결산 (3).zip을 선택하세요', filetypes=[('ZIP 파일', '*.zip')])
-            window.destroy()
+        archive = choose_archive()
         if not archive:
             raise SystemExit('파일 선택을 취소했습니다.')
         upgrade(archive)
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as e:
+    except (OSError, ValueError, KeyError, zipfile.BadZipFile, EOFError) as e:
         raise SystemExit('변환 실패: ' + str(e))
