@@ -39,6 +39,7 @@ def report_view(report,embedded=True):
 
 def upload_page(c,year,user):
     st.subheader(f'{year}년 월별 원장 업로드')
+    st.caption('원장 읽기 버전: 2026.10.29.2')
     existing=store.imports(c)
     if existing:
         st.caption('저장된 월: '+', '.join(f"{i['month']}월" for i in existing))

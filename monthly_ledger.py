@@ -4,6 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import hashlib
 import re
+import unicodedata
 from pathlib import Path
 import openpyxl
 from monthly_report_preview import WorkbookCalculator
@@ -166,10 +167,17 @@ class FormulaError:
 
 def money(value):
     if value is None or value=='':return Decimal(0)
-    text=str(value).strip().replace(',','')
+    text=str(value)
+    start,end=0,len(text)
+    def padding(char):return char.isspace() or unicodedata.category(char)=='Cf'
+    while start<end and padding(text[start]):start+=1
+    while end>start and padding(text[end-1]):end-=1
+    text=text[start:end]
+    if not text:return Decimal(0)
+    text=text.replace(',','')
     if text.startswith('(') and text.endswith(')'):text='-'+text[1:-1]
     try:amount=Decimal(text)
-    except InvalidOperation:raise ValueError('금액을 해석할 수 없습니다: '+str(value))
+    except InvalidOperation:raise ValueError(f'금액을 해석할 수 없습니다: {value!r}')
     if not amount.is_finite():raise ValueError('유한한 금액을 입력하세요.')
     return amount
 
@@ -204,17 +212,24 @@ def read_ledger(path):
         def value(key):
             column=mapping.get(key)
             return calc.value(sheet.title,f'{openpyxl.utils.get_column_letter(column)}{r}') if column else None
+        def amount(key):
+            column=mapping[key]
+            coordinate=f'{openpyxl.utils.get_column_letter(column)}{r}'
+            try:return money(value(key))
+            except (ValueError,TypeError,ArithmeticError) as e:
+                label=str(sheet.cell(header,column).value)
+                raise ValueError(f'{sheet.title}!{coordinate} ({label}): {e}') from e
         raw_date=value('date')
         if raw_date in (None,''):
             # Blank rows and unclassified footer totals are not transactions.
-            if str(value('department') or '')=='데크거더' and any(money(value(k)) for k in ['inflow','outflow','vat']):
+            if str(value('department') or '')=='데크거더' and any(amount(k) for k in ['inflow','outflow','vat']):
                 raise ValueError(f'{r}행: 집계 대상 금액에 거래일자가 없습니다.')
             continue
         try:
             posting=parse_date(raw_date,book.epoch)
             if not 2000<=posting.year<=2100:raise ValueError('지원 범위를 벗어난 거래 연도입니다.')
             entry={'row':r,'date':posting.isoformat(),'year':posting.year,'month':posting.month}
-            for key in ['inflow','outflow','vat']:entry[key]=str(money(value(key)))
+            for key in ['inflow','outflow','vat']:entry[key]=str(amount(key))
             for key in ['department','category','corporation','project','vendor','description','note']:
                 entry[key]=str(value(key) or '').strip()
             records.append(entry)
