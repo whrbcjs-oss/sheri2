@@ -39,7 +39,7 @@ def report_view(report,embedded=True):
 
 def upload_page(c,year,user):
     st.subheader(f'{year}년 월별 원장 업로드')
-    st.caption('원장 읽기·화면 버전: 2026.10.29.3')
+    st.caption('원장 읽기·화면 버전: 2026.10.29.4')
     existing=store.imports(c)
     counts=c.execute("SELECT COUNT(*),COALESCE(SUM(CASE WHEN department='데크거더' THEN 1 ELSE 0 END),0) FROM monthly_ledger").fetchone()
     cards=st.columns(4)
@@ -125,11 +125,52 @@ def settings_page(c,year):
         except (ValueError,PermissionError,sqlite3.Error) as e:st.error(str(e))
 
 
+def annotations_page(c,year):
+    from monthly_ledger import LABELS
+    st.subheader('보고서 메모·결재란')
+    st.caption('모든 사용자가 작성할 수 있습니다. 연도별로 함께 저장되며, 원장 재업로드 후에도 유지됩니다. 메모 금액은 계산값을 변경하지 않습니다.')
+    tabs=st.tabs(['노임·미불 월별 메모','셀 포스트잇','결재란'])
+    entries=store.annotations(c)
+    with tabs[0]:
+        month=st.selectbox('메모 월',list(range(1,13)),format_func=lambda m:f'{m}월',key='lb_memo_month')
+        row=st.selectbox('메모 항목',[13,17],format_func=lambda r:LABELS[r],key='lb_memo_row')
+        existing=next((a for a in entries if a['kind']=='row_memo' and a['month']==month and a['report_row']==row),None)
+        with st.form(f'lb_row_memo_{year}_{month}_{row}'):
+            text=st.text_area('금액 아래에 표시할 메모',value=existing['body'] if existing else '',placeholder='예: 전월 노임 / 전전월 미불',max_chars=1000)
+            submit=st.form_submit_button('월별 메모 저장',type='primary')
+        if submit:
+            try:store.save_annotation(c,year,month,row,'row_memo',text);st.success('월별 메모를 저장했습니다. 빈칸으로 저장하면 삭제됩니다.')
+            except (ValueError,PermissionError,sqlite3.Error) as e:st.error(str(e))
+    with tabs[1]:
+        month=st.selectbox('포스트잇 월',[0]+list(range(1,13)),format_func=lambda m:'누계' if m==0 else f'{m}월',key='lb_sticky_month')
+        row=st.selectbox('포스트잇 항목',list(LABELS),format_func=lambda r:LABELS[r],key='lb_sticky_row')
+        existing=next((a for a in entries if a['kind']=='sticky' and a['month']==month and a['report_row']==row),None)
+        with st.form(f'lb_sticky_{year}_{month}_{row}'):
+            title=st.text_input('포스트잇 제목',value=existing['title'] if existing else '',placeholder='예: 일용부 고용보험료 내역',max_chars=120)
+            body=st.text_area('포스트잇 내용',value=existing['body'] if existing else '',placeholder='공제·환수 금액과 근거를 자유롭게 적으세요.',max_chars=5000,height=150)
+            submit=st.form_submit_button('포스트잇 저장',type='primary')
+        if submit:
+            try:store.save_annotation(c,year,month,row,'sticky',body,title);st.success('포스트잇을 저장했습니다. 제목·내용을 모두 비우고 저장하면 삭제됩니다.')
+            except (ValueError,PermissionError,sqlite3.Error) as e:st.error(str(e))
+    with tabs[2]:
+        groups=store.approvals(c)
+        with st.form(f'lb_approvals_{year}'):
+            people=[]
+            for g,group in enumerate(groups):
+                st.write(group['title']);columns=st.columns(3)
+                people.append([columns[r].text_input(item['role'],value=item['person'],key=f'lb_approver_{year}_{g}_{r}',max_chars=100) for r,item in enumerate(group['roles'])])
+            st.caption('기입한 성명을 출력하며, 비워 두면 인쇄 후 수기로 서명할 수 있습니다.')
+            submit=st.form_submit_button('결재란 저장',type='primary')
+        if submit:
+            try:store.save_approvals(c,year,people);st.success('결재란을 저장했습니다.')
+            except (ValueError,PermissionError,sqlite3.Error) as e:st.error(str(e))
+
+
 def backup_page(c,year,user):
     if not user['admin']:
         st.info('백업·복원은 관리자만 실행할 수 있습니다.');return
     st.subheader(f'{year}년 월별 자료 백업·복원')
-    st.caption('매일 첫 변경 전과 원장 교체 전에 자동 백업합니다. 월별 DB는 자체결산 DB와 별개입니다.')
+    st.caption('매일 첫 변경 전과 원장 교체 전에 자동 백업합니다. 월별 DB는 자체결산 DB와 별개입니다. 메모 기능 추가 전 백업을 복원할 때는 현재 메모·결재란을 유지합니다.')
     if st.button('월별 DB 백업 만들기'):
         shared.require_admin(st.session_state['_auth_token'])
         shared.backup_database(c.path);st.success('백업을 만들었습니다.')
@@ -161,7 +202,7 @@ def render(user):
                              value=years[0],step=1,key='lb_year')
         if '_lb_next_page' in st.session_state:
             st.session_state['lb_monthly_page']=st.session_state.pop('_lb_next_page')
-        page=st.radio('월별보고 메뉴',['원장 업로드','통장입출금기준 현황','원장 조회','이월액·조정','백업 관리'],key='lb_monthly_page')
+        page=st.radio('월별보고 메뉴',['원장 업로드','통장입출금기준 현황','원장 조회','보고서 메모·결재','이월액·조정','백업 관리'],key='lb_monthly_page')
     st.markdown('<div class="lb-breadcrumb"><span>엘비데크 월별보고 / '+page+'</span><span class="lb-badge">공급가액 기준 · 부가세 제외</span></div>',unsafe_allow_html=True)
     st.title('엘비데크 월별보고')
     st.caption('원장 업로드 → 월별 집계 → 부가세 제외 보고서 · 자체결산 자료와 분리 저장')
@@ -169,12 +210,14 @@ def render(user):
     c=store.connect(int(year))
     if page=='원장 업로드':upload_page(c,int(year),user);return
     if page=='백업 관리':backup_page(c,int(year),user);return
+    if page=='보고서 메모·결재':annotations_page(c,int(year));return
     if page=='이월액·조정':settings_page(c,int(year));return
     data=store.report(c,int(year))
     if not data:
         st.info('저장된 월별 자료가 없습니다. 원장 업로드에서 해당 월 보통예금 원장을 저장하세요.');return
     st.caption(f"{year}년 · 저장된 월: {', '.join(str(m)+'월' for m in data['months'])}")
     if page=='통장입출금기준 현황':
+        st.caption('결재란과 노임·미불 메모, 셀 포스트잇은 왼쪽 보고서 메모·결재 메뉴에서 입력합니다.')
         if not data['opening_confirmed']:st.info('이월 정산액이 아직 입력되지 않았습니다. 월별 수입·지출은 계산되며 최종 정산잔액은 미확인으로 표시합니다.')
         st.download_button('보고서 HTML 다운로드 · 열어서 인쇄/PDF 저장',render_html(data).encode('utf-8'),
                            file_name=f'엘비데크_월별보고_{year}.html',mime='text/html')

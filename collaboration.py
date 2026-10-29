@@ -283,9 +283,14 @@ def restore_database(token, path, payload, expected):
                     raise ValueError('자료가 변경되었습니다. 최신 자료를 확인한 뒤 다시 시도하세요.')
                 # Only known business tables/data are restored. Never import uploaded triggers/schema.
                 tables = [r[0] for r in dest.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'") if r[0] not in ('change_history','collaboration_revision') and not r[0].startswith('_')]
-                for table in tables:
+                for table in list(tables):
                     cols = [r[1] for r in dest.execute(f'PRAGMA table_info("{table}")')]
                     other = [r[1] for r in src.execute(f'PRAGMA table_info("{table}")')]
+                    if not other and table in ('monthly_annotations','monthly_approvals') and 'monthly_imports' in tables:
+                        # Earlier monthly backups predate the annotation feature.
+                        # Restore their financial tables while retaining current annotations.
+                        tables.remove(table)
+                        continue
                     if cols != other:
                         raise ValueError('현재 버전과 다른 백업입니다. 동일 버전의 연도별 백업을 사용하세요.')
                     if 'fiscal_year' in cols:

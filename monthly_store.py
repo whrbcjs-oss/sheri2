@@ -28,6 +28,13 @@ def connect(year):
     CREATE TABLE IF NOT EXISTS monthly_adjustments(
       fiscal_year INTEGER NOT NULL,month INTEGER NOT NULL,report_row INTEGER NOT NULL,
       amount TEXT NOT NULL,reason TEXT NOT NULL,PRIMARY KEY(fiscal_year,month,report_row));
+    CREATE TABLE IF NOT EXISTS monthly_annotations(
+      fiscal_year INTEGER NOT NULL,month INTEGER NOT NULL,report_row INTEGER NOT NULL,
+      kind TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', body TEXT NOT NULL,
+      PRIMARY KEY(fiscal_year,month,report_row,kind));
+    CREATE TABLE IF NOT EXISTS monthly_approvals(
+      fiscal_year INTEGER NOT NULL,group_no INTEGER NOT NULL,role_no INTEGER NOT NULL,
+      person TEXT NOT NULL,PRIMARY KEY(fiscal_year,group_no,role_no));
     ''')
     return shared.protect(c)
 
@@ -57,7 +64,14 @@ def records(c):
 
 def report(c,year):
     adjustments=[dict(zip(['month','report_row','amount','reason'],r)) for r in c.execute('SELECT month,report_row,amount,reason FROM monthly_adjustments ORDER BY month,report_row')]
-    return build_report(int(year),records(c),imports(c),settings(c),adjustments)
+    result=build_report(int(year),records(c),imports(c),settings(c),adjustments)
+    if result:
+        result['annotations']=annotations(c)
+        for row in result['rows']:
+            if row['row'] in (13,17):
+                row['subnotes']=[next((a['body'] for a in result['annotations'] if a['kind']=='row_memo' and a['report_row']==row['row'] and a['month']==m),'') for m in range(1,13)]
+        result['approval_groups']=approvals(c)
+    return result
 
 
 def save_month(c,year,month,payload,original,token):
@@ -112,3 +126,45 @@ def save_insurance(c,year,month,amount,reason):
 def ledger(c):
     import pandas as pd
     return pd.read_sql_query('SELECT source_row AS 원장행,posting_date AS 날짜,month AS 월,corporation AS 법인,project AS 프로젝트,vendor AS 거래처,department AS 대분류,category AS 중분류,inflow AS 입금,outflow AS 출금,vat AS 부가세,description AS 적요,note AS 비고 FROM monthly_ledger ORDER BY posting_date,source_row',c)
+
+
+APPROVAL_GROUPS=['데크거더사업부','본사']
+APPROVAL_ROLES=['담당','이사','사장']
+
+
+def annotations(c):
+    columns=['month','report_row','kind','title','body']
+    return [dict(zip(columns,r)) for r in c.execute('SELECT month,report_row,kind,title,body FROM monthly_annotations ORDER BY month,report_row,kind')]
+
+
+def approvals(c):
+    values={(g,r):name for g,r,name in c.execute('SELECT group_no,role_no,person FROM monthly_approvals')}
+    return [{'title':title,'roles':[{'role':role,'person':values.get((g,r),'')} for r,role in enumerate(APPROVAL_ROLES)]} for g,title in enumerate(APPROVAL_GROUPS)]
+
+
+def save_annotation(c,year,month,row,kind,body,title=''):
+    from monthly_ledger import LABELS
+    year,month,row=int(year),int(month),int(row)
+    if int(c.path.stem.rsplit('_',1)[1])!=year:raise ValueError('회계연도가 다릅니다.')
+    if kind not in ('row_memo','sticky') or row not in LABELS:raise ValueError('메모 위치가 올바르지 않습니다.')
+    if kind=='row_memo' and (row not in (13,17) or not 1<=month<=12):raise ValueError('노임·미불 월별 메모 위치를 확인하세요.')
+    if kind=='sticky' and not 0<=month<=12:raise ValueError('포스트잇의 월을 확인하세요.')
+    body,title=str(body).strip(),str(title).strip()
+    if kind=='row_memo':title=''
+    if len(title)>120 or len(body)>(1000 if kind=='row_memo' else 5000):raise ValueError('메모가 너무 깁니다. 제목 120자, 월별 메모 1000자, 포스트잇 5000자 이내로 입력하세요.')
+    with c:
+        if not body and not title:
+            c.execute('DELETE FROM monthly_annotations WHERE fiscal_year=? AND month=? AND report_row=? AND kind=?',(year,month,row,kind))
+        else:
+            c.execute('INSERT INTO monthly_annotations VALUES(?,?,?,?,?,?) ON CONFLICT(fiscal_year,month,report_row,kind) DO UPDATE SET title=excluded.title,body=excluded.body',
+                      (year,month,row,kind,title,body))
+
+
+def save_approvals(c,year,people):
+    year=int(year)
+    if int(c.path.stem.rsplit('_',1)[1])!=year:raise ValueError('회계연도가 다릅니다.')
+    if len(people)!=2 or any(len(group)!=3 for group in people):raise ValueError('사업부·본사 결재란을 확인하세요.')
+    values=[(year,g,r,str(name).strip()) for g,group in enumerate(people) for r,name in enumerate(group)]
+    if any(len(row[3])>100 for row in values):raise ValueError('결재란 성명은 100자 이내로 입력하세요.')
+    with c:
+        c.executemany('INSERT INTO monthly_approvals VALUES(?,?,?,?) ON CONFLICT(fiscal_year,group_no,role_no) DO UPDATE SET person=excluded.person',values)
