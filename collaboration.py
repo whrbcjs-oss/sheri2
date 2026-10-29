@@ -296,8 +296,10 @@ def restore_database(token, path, payload, expected):
                 dest.create_function('current_actor', 0, lambda: actor['username'])
                 dest.execute('BEGIN IMMEDIATE')
                 # Preserve audit triggers; temporarily open the year inside the restore transaction.
-                dest.execute('UPDATE accounting_close SET closed=0')
-                for table in [t for t in tables if t != 'accounting_close'] + ['accounting_close']:
+                if 'accounting_close' in tables:
+                    dest.execute('UPDATE accounting_close SET closed=0')
+                ordered=[t for t in tables if t!='accounting_close'] + (['accounting_close'] if 'accounting_close' in tables else [])
+                for table in ordered:
                     cols = [r[1] for r in dest.execute(f'PRAGMA table_info("{table}")')]
                     dest.execute(f'DELETE FROM "{table}"')
                     marks = ','.join('?' for _ in cols)

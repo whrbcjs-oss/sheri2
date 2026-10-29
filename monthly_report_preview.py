@@ -164,7 +164,7 @@ class WorkbookCalculator:
         return str(value or '').casefold()==str(wanted or '').casefold()
 
 
-def analyze(path):
+def analyze(path, include_ledger=False):
     path=Path(path)
     formulas=openpyxl.load_workbook(path,data_only=False)
     saved=openpyxl.load_workbook(path,data_only=True)
@@ -189,7 +189,8 @@ def analyze(path):
         ledger.append({'row':r,'date':str(date)[:10],'month':int(number(calc.value(LEDGER,f'D{r}'))),
                        'department':calc.value(LEDGER,f'Q{r}'),'category':calc.value(LEDGER,f'R{r}'),
                        'inflow':float(number(calc.value(LEDGER,f'K{r}'))),'outflow':float(number(calc.value(LEDGER,f'L{r}'))),
-                       'vat':float(number(calc.value(LEDGER,f'T{r}')))})
+                       'vat':float(number(calc.value(LEDGER,f'T{r}'))),
+                       **({key:str(calc.value(LEDGER,f'{col}{r}') or '') for key,col in [('corporation','B'),('project','G'),('vendor','I'),('description','S'),('note','V')]} if include_ledger else {})})
     selected=[r for r in ledger if r['department']=='데크거더']
     months=sorted({r['month'] for r in ledger});month_counts=dict(Counter(r['month'] for r in selected))
     adjustments=[]
@@ -217,7 +218,7 @@ def analyze(path):
             breakdowns.append({'report_row':report_row,'month':month,'gross':sum(r['inflow'] if report_row in (8,9) else r['outflow'] for r in matching),'vat':sum(r['vat'] for r in vat_rows),'count':len(matching)})
     classified_outflows=sum(r['outflow'] for r in selected)
     classified_inflows=sum(r['inflow'] for r in selected)
-    return {'source':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'sheet':REPORT,
+    result={'source':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'sheet':REPORT,
             'sheets':[{'name':s.title,'rows':s.max_row,'columns':s.max_column} for s in formulas],
             'period_start':min(r['date'] for r in ledger),'period_end':max(r['date'] for r in ledger),'months':months,
             'ledger_count':len(ledger),'selected_count':len(selected),'month_counts':month_counts,
@@ -228,12 +229,17 @@ def analyze(path):
             'prior_year_claims':ws['B36'].value,
             'notes':[str(ws.cell(r,2).value) for r in [32,33,34] if ws.cell(r,2).value],
             'print_area':str(formulas[REPORT].print_area)}
+    if include_ledger:
+        result['ledger_rows']=ledger
+    return result
 
 
-def render_html(data):
+def render_html(data, embedded=False):
     payload=json.dumps(data,ensure_ascii=False).replace('</','<\\/')
     template=Path(__file__).with_name('monthly_preview_template.html').read_text(encoding='utf-8')
-    return template.replace('__REPORT_DATA__',payload)
+    result=template.replace('__REPORT_DATA__',payload)
+    if embedded:result=result.replace('<body>','<body class="embedded">')
+    return result
 
 
 def choose_file():
