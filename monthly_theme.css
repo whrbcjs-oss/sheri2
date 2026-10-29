@@ -53,3 +53,6 @@ h3{font-size:21px!important}
 [data-testid="stToolbar"]{display:none}
 [data-testid="stSidebar"] [data-testid="stRadioOption"][data-selected="true"]>div>div:first-child{background:#54a99d!important;border-color:#54a99d!important}
 [data-testid="stSidebar"] [data-testid="stRadioOption"][data-selected="true"]>div>div:first-child>div{background:#f4fffc!important}
+
+/* Match readable report typography in the surrounding monthly screens. */
+h1{font-size:32px!important}[data-testid="stMarkdownContainer"] p,[data-testid="stWidgetLabel"] p{font-size:15px}[data-testid="stCaptionContainer"] p{font-size:13px}[data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p{font-size:14px}[data-testid="stMetricLabel"]{font-size:14px}[data-testid="stMetricValue"]{font-size:30px}.lb-breadcrumb{font-size:13px}.lb-badge{font-size:12px}.lb-flow-step{font-size:14px}.lb-upload-tip{font-size:14px}
