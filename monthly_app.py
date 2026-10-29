@@ -63,6 +63,10 @@ def upload_page(c,year,user):
     upload=st.session_state.get('_lb_upload')
     if not upload:return
     data=upload['payload']
+    if data.get('native_formula_count'):
+        st.caption(f"SEARCH·IF 등 문자 분류 수식 {data['native_formula_count']:,}개 셀을 직접 계산했습니다.")
+    if data.get('cached_formula_count'):
+        st.caption(f"엑셀에 저장된 수식 계산 결과 {data['cached_formula_count']:,}개 셀을 사용했습니다. 원본 수식을 바꾼 경우 Excel에서 전체 계산 후 저장한 파일을 올려 주세요.")
     months=sorted({r['month'] for r in data['records'] if r['year']==year},reverse=True)
     if not months:
         st.warning(f'파일에 {year}년 거래가 없습니다. 왼쪽 월별보고 회계연도를 변경하세요.');return

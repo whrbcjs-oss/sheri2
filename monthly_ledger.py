@@ -3,9 +3,11 @@ from collections import Counter
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 import hashlib
+import re
 from pathlib import Path
 import openpyxl
 from monthly_report_preview import WorkbookCalculator
+from openpyxl.formula.tokenizer import Tokenizer
 
 LABELS={8:'공사수입',9:'김제공장',10:'입금 계 ①',11:'급여 등',12:'소득세등',13:'노임',
         15:'건강.연금',16:'고용.산재',17:'미불',19:'수시',20:'공과금',21:'카드대금',
@@ -15,6 +17,151 @@ HEADERS={'date':['날짜','거래일자'],'inflow':['차변','입금'],'outflow'
          'department':['대분류'],'category':['중분류'],'vat':['VAT','부가세'],
          'corporation':['법인'],'project':['프로젝트명','프로젝트명2'],'vendor':['거래처명'],
          'description':['품의내역명','적요란','적요'],'note':['비고']}
+
+
+class LedgerValueReader(WorkbookCalculator):
+    """Recalculate supported formulas; use saved Excel results for other formulas.
+
+    This reader is only for importing the ledger. The separate independent report
+    verifier continues to reject unsupported formulas instead of trusting caches.
+    """
+    FUNCTIONS={'SUMIFS','SUM','MONTH'}
+    TEXT_FUNCTIONS={'IF','IFERROR','OR','AND','NOT','ISNUMBER','SEARCH'}
+
+    def __init__(self,book,cached):
+        super().__init__(book)
+        self.cached=cached
+        self.cached_cells=set()
+        self.native_cells=set()
+        self._values={}
+        self._active=set()
+
+    def value(self,sheet,coordinate):
+        key=(sheet,coordinate)
+        if key in self._values:return self._values[key]
+        if key in self._active:raise ValueError(f'{sheet}!{coordinate}: 순환 참조 수식입니다.')
+        self._active.add(key)
+        try:
+            result=self._read_value(sheet,coordinate)
+            self._values[key]=result
+            return result
+        finally:self._active.remove(key)
+
+    def _read_value(self,sheet,coordinate):
+        cell=self.book[sheet][coordinate]
+        if cell.data_type=='e':raise ValueError(f'{sheet}!{coordinate}: 엑셀 오류 {cell.value}가 있습니다.')
+        if cell.data_type!='f':return cell.value
+        supported=isinstance(cell.value,str)
+        functions=[]
+        tokens=[]
+        if supported:
+            tokens=[t for t in Tokenizer(cell.value).items if t.type!='WHITE-SPACE']
+            functions=[t.value[:-1].upper() for t in tokens if t.type=='FUNC' and t.subtype=='OPEN']
+            supported=all(name in self.FUNCTIONS for name in functions)
+            supported=supported and all(t.value in ('+','-','*','/') for t in tokens if t.type=='OPERATOR-INFIX')
+            supported=supported and all(t.subtype in ('NUMBER','TEXT','RANGE') for t in tokens if t.type=='OPERAND')
+        if supported:
+            return self.expression(cell.value,sheet)
+        if tokens and self.supports_text_formula(tokens):
+            result=self.text_formula(tokens,sheet)
+            if isinstance(result,FormulaError):
+                raise ValueError(f'{sheet}!{coordinate}: 분류 수식 계산 오류 {result.code}입니다. 원본 수식을 확인하세요.')
+            self.native_cells.add(f'{sheet}!{coordinate}')
+            return result
+        cached=self.cached[sheet][coordinate]
+        if cached.data_type=='e':
+            raise ValueError(f'{sheet}!{coordinate}: 엑셀 계산 결과에 오류 {cached.value}가 있습니다. 원본 수식을 확인하고 다시 계산·저장하세요.')
+        # A string-typed empty cached result is distinct from a missing numeric cache.
+        if cached.value is not None or cached.data_type=='str':
+            self.cached_cells.add(f'{sheet}!{coordinate}')
+            return '' if cached.value is None else cached.value
+        names=', '.join(dict.fromkeys(name for name in functions if name not in self.FUNCTIONS)) or '해당'
+        raise ValueError(f'{sheet}!{coordinate}: {names} 수식의 저장된 계산 결과가 없습니다. '
+                         'Excel에서 계산 옵션을 자동으로 설정하고 Ctrl+Alt+F9로 전체 계산한 뒤 Ctrl+S로 저장하여 다시 업로드하세요.')
+
+
+    def supports_text_formula(self,tokens):
+        for token in tokens:
+            if token.type=='FUNC' and token.subtype=='OPEN' and token.value[:-1].upper() not in self.TEXT_FUNCTIONS:return False
+            if token.type not in ('FUNC','SEP','OPERAND'):return False
+            if token.type=='OPERAND' and token.subtype not in ('NUMBER','TEXT','RANGE','LOGICAL'):return False
+            if token.type=='OPERAND' and token.subtype=='RANGE' and (':' in token.value or '[[' in token.value):return False
+        return True
+
+    def text_formula(self,tokens,sheet):
+        pos=0
+        def parse():
+            nonlocal pos
+            token=tokens[pos];pos+=1
+            if token.type=='FUNC' and token.subtype=='OPEN':
+                args=[]
+                while pos<len(tokens) and tokens[pos].subtype!='CLOSE':
+                    args.append(parse())
+                    if pos<len(tokens) and tokens[pos].type=='SEP':pos+=1
+                    else:break
+                if pos>=len(tokens) or tokens[pos].subtype!='CLOSE':raise ValueError('분류 수식 괄호를 확인하세요.')
+                pos+=1;return ('call',token.value[:-1].upper(),args)
+            if token.type!='OPERAND':raise ValueError('지원하지 않는 분류 수식입니다.')
+            return ('operand',token.subtype,token.value)
+        tree=parse()
+        if pos!=len(tokens):raise ValueError('지원하지 않는 분류 수식입니다.')
+        def truth(value):
+            if isinstance(value,FormulaError):return value
+            if value is None:return False
+            if isinstance(value,(bool,int,float,Decimal)):return bool(value)
+            if str(value).upper() in ('TRUE','FALSE'):return str(value).upper()=='TRUE'
+            return FormulaError('#VALUE!')
+        def evaluate(node):
+            kind,name,args=node
+            if kind=='operand':
+                if name=='NUMBER':return Decimal(args)
+                if name=='TEXT':return args[1:-1].replace('""','"')
+                if name=='LOGICAL':return args.upper()=='TRUE'
+                return self.resolve(args,sheet)
+            if name=='IF':
+                if len(args) not in (2,3):return FormulaError('#VALUE!')
+                condition=truth(evaluate(args[0]))
+                if isinstance(condition,FormulaError):return condition
+                return evaluate(args[1]) if condition else evaluate(args[2]) if len(args)==3 else False
+            if name=='IFERROR':
+                if len(args)!=2:return FormulaError('#VALUE!')
+                result=evaluate(args[0]);return evaluate(args[1]) if isinstance(result,FormulaError) else result
+            values=[evaluate(arg) for arg in args]
+            if name=='ISNUMBER':
+                if len(values)!=1:return FormulaError('#VALUE!')
+                return isinstance(values[0],(Decimal,int,float)) and not isinstance(values[0],bool)
+            for value in values:
+                if isinstance(value,FormulaError):return value
+            if name in ('OR','AND','NOT'):
+                converted=[truth(value) for value in values]
+                for value in converted:
+                    if isinstance(value,FormulaError):return value
+                if name=='OR':return any(converted)
+                if name=='AND':return all(converted)
+                return not converted[0] if len(converted)==1 else FormulaError('#VALUE!')
+            if name=='SEARCH':
+                if len(values) not in (2,3):return FormulaError('#VALUE!')
+                find='' if values[0] is None else str(values[0])
+                text='' if values[1] is None else str(values[1])
+                try:start=int(values[2]) if len(values)==3 else 1
+                except (TypeError,ValueError):return FormulaError('#VALUE!')
+                if start<1 or start>len(text)+1:return FormulaError('#VALUE!')
+                pattern=[];i=0
+                while i<len(find):
+                    char=find[i]
+                    if char=='~' and i+1<len(find):i+=1;pattern.append(re.escape(find[i]))
+                    elif char=='*':pattern.append('.*')
+                    elif char=='?':pattern.append('.')
+                    else:pattern.append(re.escape(char))
+                    i+=1
+                match=re.search(''.join(pattern),text[start-1:],flags=re.IGNORECASE|re.DOTALL)
+                return Decimal(match.start()+start) if match else FormulaError('#VALUE!')
+            return FormulaError('#NAME?')
+        return evaluate(tree)
+
+
+class FormulaError:
+    def __init__(self,code):self.code=code
 
 
 def money(value):
@@ -41,6 +188,7 @@ def parse_date(value,epoch):
 
 def read_ledger(path):
     path=Path(path);book=openpyxl.load_workbook(path,data_only=False)
+    cached=openpyxl.load_workbook(path,data_only=True)
     sheets=[book['보통예금_원장']] if '보통예금_원장' in book.sheetnames else list(book)
     selected=None
     for sheet in sheets:
@@ -51,7 +199,7 @@ def read_ledger(path):
                 if selected is not None:raise ValueError('원장 형식의 시트가 여러 개입니다. 보통예금_원장 이름으로 저장해 주세요.')
                 selected=(sheet,row[0].row,mapping);break
     if selected is None:raise ValueError('날짜, 차변/입금, 대변/출금, 대분류, 중분류, VAT 열이 있는 보통예금 원장이 필요합니다.')
-    sheet,header,mapping=selected;calc=WorkbookCalculator(book);records=[]
+    sheet,header,mapping=selected;calc=LedgerValueReader(book,cached);records=[]
     for r in range(header+1,sheet.max_row+1):
         def value(key):
             column=mapping.get(key)
@@ -73,7 +221,8 @@ def read_ledger(path):
         except (ValueError,TypeError,ArithmeticError) as e:raise ValueError(f'{r}행: {e}') from e
     if not records:raise ValueError('읽을 수 있는 거래가 없습니다.')
     return {'source':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
-            'sheet':sheet.title,'records':records,
+            'sheet':sheet.title,'records':records,'cached_formula_count':len(calc.cached_cells),'native_formula_count':len(calc.native_cells),
+            'calculation_mode':getattr(book.calculation,'calcMode',None),
             'periods':sorted({(r['year'],r['month']) for r in records})}
 
 
