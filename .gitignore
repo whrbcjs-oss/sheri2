@@ -1,0 +1,15 @@
+# Local company files: never publish.
+app.py
+joint_cost.py
+report_templates.json
+data/
+private/
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.zip
+*.xlsx
+*.xlsm
+.venv/
+__pycache__/

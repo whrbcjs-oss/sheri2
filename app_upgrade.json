@@ -1,0 +1,86 @@
+{
+  "original_sha256": "c7aa0ec358e8904d4f73089930a894099516b3aca3307654ae7a633556d3fb55",
+  "result_sha256": "21e4c288a70c71d620945351cf6b6a439c5f9361bfb1be622185888f87e870fe",
+  "patches": [
+    {
+      "start": 23,
+      "end": 23,
+      "replacement": "import collaboration as shared\nif not globals().get(\"MULTIUSER_ENTRY\"):\n    st.error(\"다중 사용자 실행 방법: streamlit run multiuser_app.py\")\n    st.stop()\n"
+    },
+    {
+      "start": 438,
+      "end": 464,
+      "replacement": "DB_DIR = shared.DATA\n"
+    },
+    {
+      "start": 570,
+      "end": 645,
+      "replacement": "\n"
+    },
+    {
+      "start": 6008,
+      "end": 6134,
+      "replacement": "    path = DB_DIR / f\"finance_{int(year)}.db\"\n    c = shared.connect(path)\n"
+    },
+    {
+      "start": 11905,
+      "end": 11918,
+      "replacement": "    return shared.protect(c)\n"
+    },
+    {
+      "start": 72318,
+      "end": 72715,
+      "replacement": "    columns = ['fiscal_year','row_no','item','reference_value','ledger_reference_value','source_sheet','source_file']\n    records = [tuple(None if pd.isna(v) else v for v in row) for row in df[columns].itertuples(index=False, name=None)]\n    c.executemany('INSERT OR REPLACE INTO technical_reference (' + ','.join(columns) + ') VALUES (?,?,?,?,?,?,?)', records)\n"
+    },
+    {
+      "start": 73212,
+      "end": 73788,
+      "replacement": "    require_admin()\n    shared.backup_database(c.path)\n    columns = ['fiscal_year','corporation','project','cost_type','account_code','account_name','posting_date','description','vendor_code','vendor_name','debit','credit','note','source_file']\n    records = [tuple(None if pd.isna(v) else v for v in row) for row in df[columns].itertuples(index=False, name=None)]\n    with c:\n        c.execute('DELETE FROM ledger')\n        c.execute('DELETE FROM manual_items')\n        c.executemany('INSERT INTO ledger (' + ','.join(columns) + ') VALUES (' + ','.join('?' for _ in columns) + ')', records)\n"
+    },
+    {
+      "start": 73808,
+      "end": 73839,
+      "replacement": ""
+    },
+    {
+      "start": 75771,
+      "end": 75867,
+      "replacement": "            st.session_state['self_page']=st.session_state.get('self_settlement_page','대시보드')\n"
+    },
+    {
+      "start": 77379,
+      "end": 77379,
+      "replacement": "            require_admin()\n"
+    },
+    {
+      "start": 77831,
+      "end": 77831,
+      "replacement": "DB_PATH = c.path\n"
+    },
+    {
+      "start": 127353,
+      "end": 127353,
+      "replacement": "    require_admin()\n"
+    },
+    {
+      "start": 147909,
+      "end": 148014,
+      "replacement": "            fy=int(selected_year)\n            st.write(f\"회계연도: {fy}\")\n"
+    },
+    {
+      "start": 150352,
+      "end": 150352,
+      "replacement": "    require_admin()\n"
+    },
+    {
+      "start": 150652,
+      "end": 150860,
+      "replacement": "    backup_panel(c, selected_year)\n"
+    },
+    {
+      "start": 151342,
+      "end": 151373,
+      "replacement": "5. 다중 사용자 기능은 multiuser_app.py에서 제공\n"
+    }
+  ]
+}
