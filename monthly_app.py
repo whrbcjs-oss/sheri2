@@ -39,16 +39,23 @@ def report_view(report,embedded=True):
 
 def upload_page(c,year,user):
     st.subheader(f'{year}년 월별 원장 업로드')
-    st.caption('원장 읽기 버전: 2026.10.29.2')
+    st.caption('원장 읽기·화면 버전: 2026.10.29.3')
     existing=store.imports(c)
+    counts=c.execute("SELECT COUNT(*),COALESCE(SUM(CASE WHEN department='데크거더' THEN 1 ELSE 0 END),0) FROM monthly_ledger").fetchone()
+    cards=st.columns(4)
+    cards[0].metric('회계연도',str(year))
+    cards[1].metric('저장된 월',f'{len(existing)}개월')
+    cards[2].metric('저장된 원장',f'{counts[0]:,}건')
+    cards[3].metric('데크거더 집계 대상',f'{counts[1]:,}건')
+    st.markdown('<div class="lb-flow"><div class="lb-flow-step active"><strong>1</strong>월별 원장 선택</div><span>→</span><div class="lb-flow-step"><strong>2</strong>연도·월 확인 후 저장</div><span>→</span><div class="lb-flow-step"><strong>3</strong>통장기준 보고서 확인</div></div>',unsafe_allow_html=True)
     if existing:
-        st.caption('저장된 월: '+', '.join(f"{i['month']}월" for i in existing))
-        st.dataframe(existing,hide_index=True,use_container_width=True)
+        with st.expander('저장된 월별 원장 내역'):
+            st.dataframe(existing,hide_index=True,use_container_width=True)
     if not user['admin']:
         st.info('원장 파일 교체 업로드는 관리자만 실행합니다. 보고서·원장 조회와 이월액·보험료 조정은 모든 사용자가 사용할 수 있습니다.')
         return
     st.info('보통예금_원장 시트만 있는 엑셀을 업로드하세요. 보고서 시트는 필요하지 않습니다.')
-    st.caption('선택한 월의 자료만 저장·교체합니다. 이미 저장된 다른 달과 이월액·조정액은 유지됩니다.')
+    st.markdown('<div class="lb-upload-tip">해당 월의 보통예금 원장을 선택하면 자동으로 읽습니다. 선택한 월만 저장·교체하며, 다른 달과 이월액·조정액은 유지합니다.</div>',unsafe_allow_html=True)
     uploaded=st.file_uploader('월별 보통예금 원장 엑셀',type=['xlsx'],key='lb_upload_file')
     if uploaded:
         blob=uploaded.getvalue();digest=hashlib.sha256(blob).hexdigest()
@@ -144,6 +151,8 @@ def backup_page(c,year,user):
 
 
 def render(user):
+    css=Path(__file__).with_name('monthly_theme.css').read_text(encoding='utf-8')
+    st.markdown('<style>'+css+'</style>',unsafe_allow_html=True)
     with st.sidebar:
         st.subheader('엘비데크 월별보고')
         this_year=datetime.now(ZoneInfo('Asia/Seoul')).year
@@ -153,6 +162,7 @@ def render(user):
         if '_lb_next_page' in st.session_state:
             st.session_state['lb_monthly_page']=st.session_state.pop('_lb_next_page')
         page=st.radio('월별보고 메뉴',['원장 업로드','통장입출금기준 현황','원장 조회','이월액·조정','백업 관리'],key='lb_monthly_page')
+    st.markdown('<div class="lb-breadcrumb"><span>엘비데크 월별보고 / '+page+'</span><span class="lb-badge">공급가액 기준 · 부가세 제외</span></div>',unsafe_allow_html=True)
     st.title('엘비데크 월별보고')
     st.caption('원장 업로드 → 월별 집계 → 부가세 제외 보고서 · 자체결산 자료와 분리 저장')
     if '_lb_success' in st.session_state:st.success(st.session_state.pop('_lb_success'))
