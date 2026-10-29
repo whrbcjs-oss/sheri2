@@ -13,3 +13,4 @@ private/
 *.xlsm
 .venv/
 __pycache__/
+.preview-venv/
