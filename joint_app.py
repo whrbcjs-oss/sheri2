@@ -10,10 +10,10 @@ import streamlit as st
 import streamlit.components.v1 as components
 import collaboration as shared
 import joint_store as db
-from joint_report import render as report_html,money
+from joint_report import render as report_html,money,period_label
 from joint_import import read as import_rows,LABELS
 
-VERSION='2026.10.30.1'
+VERSION='2026.10.30.2'
 
 def saved():
     st.session_state['_jv_success']='저장했습니다.';st.rerun()
@@ -143,7 +143,7 @@ def entry_page(c,p,m,start,end):
         elif kind=='subcontract':
             payload['vendor']=st.text_input('하도급 업체',data.get('vendor',''))
             for k,label in [('supply','청구 공급가액'),('vat','청구 VAT'),('paid_supply','지급 공급가액'),('paid_vat','지급 VAT')]:payload[k]=st.text_input(label,data.get(k,'0'))
-            payload['paid_date']=st.text_input('지급일 (YYYY-MM-DD, 미지급은 빈칸)',data.get('paid_date',''));payload['method']=st.text_input('공종·지급방식',data.get('method',''))
+            payload['paid_date']=st.text_input('지급일 (YYYY-MM-DD, 미지급은 빈칸)',data.get('paid_date',''));payload['method']=st.text_input('지급방식',data.get('method',''));payload['work_type']=st.text_input('공종명',data.get('work_type',''))
             if payload['paid_date']:db.day(payload['paid_date'])
             st.caption('분할지급을 별도 행으로 입력할 때는 청구 공급가액·VAT를 0으로 두어 청구액이 중복되지 않게 하세요. 별도 지급분이 선택 기간 밖이면 기간을 넓혀 누적 조회하세요.')
         elif kind=='recovery':
@@ -165,21 +165,28 @@ def report_page(c,p,m,start,end,kind):
     st.header(kind+' 작성·발행')
     data=db.settlement(c,p,m['id'],start,end)
     if data['unallocated']:st.warning(f"미배분 원장 {data['unallocated']}건이 있습니다. 미리보기에는 아직 반영되지 않으며 발행할 수 없습니다.")
-    a=data['amounts'];cols=st.columns(3)
-    for col,key,label in zip(cols,['claim','recovery','remaining'] if kind=='정산서' else ['base','invested','letter_claim'],['청구 합계','회수 합계','미회수액'] if kind=='정산서' else ['배분 공급가액','회원사투입 공제','금월청구액']):col.metric(label,money(a[key])+'원')
-    st.caption('정산은 선택 기간에 완전히 포함되는 자료로 계산합니다. 공사 전체 누적 정산은 시작월을 공사 시작월로 선택하세요. 회수일과 대상 배분월은 별도로 저장합니다.')
     owner=next(x for x in data['companies'] if x['id']==data['project']['owner_id']);info=json.loads(owner['info'])
-    number=st.text_input('문서번호 (전체 문서 중 중복 불가)',key='jv_docnumber_'+kind)
-    issued=st.date_input('발행일',key='jv_issue_'+kind)
-    meta=dict(number=number,issued=issued.isoformat())
-    if kind=='공문':
-        st.info('공문 공제액은 회원사투입액입니다. 관리비·산재·고용 공제와 혼합하지 않습니다.')
-        meta.update(title=st.text_input('제목',f'{start} ~ {end} 공동원가 안분정산 및 자금청구의 건',key='jv_title_'+str(p)+'_'+start+'_'+end),reference=st.text_input('참조','공동도급 담당자'),body=st.text_area('본문 추가 문구'),due=st.text_input('입금 요청기한'),bank=st.text_input('입금계좌',info.get('입금계좌','')),attachments=st.text_input('첨부목록','공동원가 투입 및 배분내역서 1부, 현장별 원장 1부'))
+    with st.expander('발행 정보 · 공문 문구 · 직인 설정',expanded=False):
+        st.caption('정산은 선택 기간에 완전히 포함되는 자료로 계산합니다. 누적 정산은 공사 시작월부터 선택하세요.')
+        number=st.text_input('문서번호 (전체 문서 중 중복 불가)',key='jv_docnumber_'+kind)
+        issued=st.date_input('발행일',key='jv_issue_'+kind)
+        meta=dict(number=number,issued=issued.isoformat())
+        if kind=='공문':
+            st.info('공문 공제액은 회원사투입액입니다. 관리비·산재·고용 공제와 혼합하지 않습니다.')
+            meta.update(title=st.text_input('제목',period_label(start,end)+' 공동원가 안분정산 및 자금청구의 건',key='jv_title_'+str(p)+'_'+start+'_'+end),reference=st.text_input('참조','공동도급 담당자'),body=st.text_area('본문 추가 문구'),due=st.text_input('입금 요청기한'),bank=st.text_input('입금계좌',info.get('입금계좌','')),attachments=st.text_input('첨부목록','공동원가 투입 및 배분내역서 1부, 현장별 원장 1부'))
+            seal=st.file_uploader('직인 이미지 (선택, PNG/JPG 1MB 이하)',type=['png','jpg','jpeg'],key='jv_seal_'+str(p))
+            if seal:
+                import base64
+                content=seal.getvalue()
+                if len(content)>1024*1024:raise ValueError('직인 이미지는 1MB 이하로 선택하세요.')
+                mime='image/png' if content.startswith(b'\x89PNG\r\n\x1a\n') else 'image/jpeg' if content.startswith(b'\xff\xd8\xff') else None
+                if not mime:raise ValueError('PNG 또는 JPG 이미지를 선택하세요.')
+                meta['seal']='data:'+mime+';base64,'+base64.b64encode(content).decode('ascii')
     html=report_html(data,kind,meta)
     st.download_button('미확정 '+kind+' HTML 내려받기',html.encode('utf-8'),file_name='미확정_'+kind+'.html',mime='text/html')
     if st.button('현재 내용 확정·발행',type='primary',disabled=bool(data['unallocated'])):
         db.snapshot(c,data,kind,number,issued,meta);saved()
-    components.html(html,height=1000,scrolling=True)
+    components.html(html,height=1900,scrolling=True)
 
 def archive_page(c,p):
     st.header('발행본·백업·변경 이력')

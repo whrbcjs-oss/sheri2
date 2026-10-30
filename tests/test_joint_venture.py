@@ -98,3 +98,16 @@ class JointTests(unittest.TestCase):
         self.assertEqual(len(j.ledger(self.c,self.p)),before)
         self.assertIsNone(self.c.execute('PRAGMA foreign_key_check').fetchone())
         self.assertGreater(self.c.execute('SELECT count(*) FROM change_history').fetchone()[0],0)
+
+    def test_excel_like_report_layout_preserves_calculations(self):
+        from joint_report import monthly_claims
+        j.add_ledger(self.c,self.p,1,[self.rec()]);j.allocate(self.c,self.p)
+        d=j.settlement(self.c,self.p,self.m['id'],'2026-01','2026-01')
+        before=json.dumps(d,sort_keys=True)
+        html=render(d,'정산서');letter=render(d,'공문',{'body':'<script>bad</script>'})
+        for id in ['settlement-grid','management-grid','subcontract-grid']:self.assertIn('id="'+id+'"',html)
+        for text in ['공사대금 수령','공 제 내 역','원가분담금 청구내역','회 수 내 역','미회수액','소계(하도급대금)']:self.assertIn(text,html)
+        self.assertIn('letter-fields',letter);self.assertIn('processing-box',letter)
+        self.assertIn('id="letter-amounts"',letter);self.assertNotIn('<script>',letter)
+        self.assertEqual(before,json.dumps(d,sort_keys=True))
+        self.assertEqual(sum(x[1][0] for x in monthly_claims(d)),j.num(d['amounts']['base']))
