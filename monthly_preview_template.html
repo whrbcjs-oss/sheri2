@@ -18,6 +18,11 @@ body{font-size:14px}h1{font-size:32px}h1 small{font-size:26px;font-weight:650;co
  .paneltitle{font-size:13pt}.panelhead small{font-size:10pt}.card .klabel{font-size:10pt}.card .kfoot{font-size:10pt}.card .value{font-size:18pt}
  .legend{font-size:10pt;line-height:1.3}.approval-table th{font-size:10pt}.approval-table .sign-cell{font-size:11pt}.sticky-card{font-size:10pt;line-height:1.3}.sticky-register{break-inside:avoid-page}.sticky-register h3{font-size:11pt;break-after:avoid}.sticky-card small,.annotation-legend{font-size:10pt}.smallnote{font-size:10pt}
 }
+
+/* White / mint portal palette shared with the settlement application. */
+:root{--navy:#303840;--teal:#009f57;--ink:#171b20;--muted:#737983;--line:#e0e3e7;--bg:#fff}
+aside{background:#fff;color:var(--ink);border-right:1px solid var(--line)}.brand small,.nav-head,.side-note,.side-note strong{color:var(--muted)}.nav-item{color:#42484f;font-size:15px}.nav-item.active{background:#dbf8e9;color:#008d4b}.side-note{border-color:var(--line)}.card,.panel{border-radius:6px;box-shadow:none}.card.teal{border-top:1px solid var(--line);padding-top:18px}.subtotal td,.expense-total td{background:#e1f8ed;border-color:#ccebdc}.fee td{background:#f7faf8;color:var(--ink)}.final td{background:#303840}.pill{background:#dbf8e9;color:#008d4b}
+@media print{.final td{background:#303840!important;color:#fff!important}h1 small{color:#171b20}}
 </style></head><body>
 <aside><div class="brand">LB DECK<small>데크·거더사업부 수지관리</small></div><div class="nav-head">MONTHLY REPORT</div><button class="nav-item active" id="nav-report" onclick="tab('report')"><span>▦</span>수입·지출 보고서</button><button class="nav-item" id="nav-analysis" onclick="tab('analysis')"><span>≡</span>자료 분석·검증</button><div class="side-note"><strong>보고서 화면 시안 · v1</strong><br>원본 엑셀 기준 / 읽기 전용<br>숫자를 누르면 집계 근거를 확인합니다.<br>회사 원본은 외부로 전송하지 않습니다.</div></aside>
 <main><div class="embedded-switch"><button class="control" onclick="tab('report')">보고서</button><button class="control" onclick="tab('analysis')">분석·검증</button></div><div class="topbar"><span>엘비데크 월별보고 &nbsp; / &nbsp; 통장 입출금 기준</span><span class="pill">공급가액 기준 · 부가세 제외</span></div>

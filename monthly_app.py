@@ -39,7 +39,7 @@ def report_view(report,embedded=True):
 
 def upload_page(c,year,user):
     st.subheader(f'{year}년 월별 원장 업로드')
-    st.caption('원장 읽기·화면 버전: 2026.10.29.5')
+    st.caption('원장 읽기·화면 버전: 2026.10.30.1')
     existing=store.imports(c)
     counts=c.execute("SELECT COUNT(*),COALESCE(SUM(CASE WHEN department='데크거더' THEN 1 ELSE 0 END),0) FROM monthly_ledger").fetchone()
     cards=st.columns(4)

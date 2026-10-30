@@ -6,6 +6,9 @@ import collaboration as shared
 
 st.set_page_config(page_title='관계사 통합 수지관리', page_icon='📊', layout='wide')
 
+# The same stylesheet also covers login, administration and the legacy settlement UI.
+st.markdown('<style>' + Path(__file__).with_name('monthly_theme.css').read_text(encoding='utf-8') + '</style>', unsafe_allow_html=True)
+
 
 def refresh():
     token = st.session_state.get('_auth_token')
