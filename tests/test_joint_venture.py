@@ -107,7 +107,7 @@ class JointTests(unittest.TestCase):
         html=render(d,'정산서');letter=render(d,'공문',{'body':'<script>bad</script>'})
         for id in ['settlement-grid','management-grid','subcontract-grid']:self.assertIn('id="'+id+'"',html)
         for text in ['공사대금 수령','공 제 내 역','원가분담금 청구내역','회 수 내 역','미회수액','소계(하도급대금)']:self.assertIn(text,html)
-        self.assertIn('letter-fields',letter);self.assertIn('processing-box',letter)
+        self.assertIn('letter-fields',letter);self.assertNotIn('class="processing-box"',letter)
         self.assertIn('id="letter-amounts"',letter);self.assertNotIn('<script>',letter)
         self.assertEqual(before,json.dumps(d,sort_keys=True))
         self.assertEqual(sum(x[1][0] for x in monthly_claims(d)),j.num(d['amounts']['base']))

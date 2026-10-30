@@ -64,3 +64,5 @@
 #root .st-key-main_system [data-testid="stRadioOption"]>div>div:first-child{display:none}
 
 #root [data-testid="stMetricValue"] p{font-size:28px!important;line-height:1.3;font-variant-numeric:tabular-nums}
+
+#root button[kind^="primary"],#root button[data-testid*="primaryFormSubmit"]{background:#009f57!important;border-color:#009f57!important;color:white!important}

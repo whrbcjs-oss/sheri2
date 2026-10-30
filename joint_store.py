@@ -14,9 +14,14 @@ def num(v):
         return d
     except (InvalidOperation,ValueError):raise ValueError(f'금액을 확인하세요: {v!r}')
 
-def day(v):return date.fromisoformat(str(v)[:10]).isoformat()
+def day(v):
+    try:return date.fromisoformat(str(v)[:10]).isoformat()
+    except ValueError:raise ValueError('날짜는 YYYY-MM-DD 형식으로 입력하세요.')
 def period(v):
-    v=str(v);date.fromisoformat(v+'-01');return v
+    v=str(v)
+    try:date.fromisoformat(v+'-01')
+    except ValueError:raise ValueError('배분연월은 YYYY-MM 형식으로 입력하세요. 예: 2026-10')
+    return v
 
 def rows(c,sql,args=()):
     cur=c.execute(sql,args);return [dict(zip([x[0] for x in cur.description],r)) for r in cur]
@@ -34,7 +39,11 @@ def connect():
     CREATE TABLE IF NOT EXISTS jv_entries(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES jv_projects(id),member_id INTEGER NOT NULL REFERENCES jv_members(id),kind TEXT NOT NULL,entry_date TEXT NOT NULL,period_start TEXT NOT NULL,period_end TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS jv_documents(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES jv_projects(id),member_id INTEGER NOT NULL REFERENCES jv_members(id),kind TEXT NOT NULL,number TEXT NOT NULL UNIQUE,issued TEXT NOT NULL,snapshot TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     ''')
-    return shared.protect(c)
+    import joint_workflow as flow
+    flow.install(c)
+    c=shared.protect(c)
+    flow.migrate(c)
+    return c
 
 def companies(c):return rows(c,'SELECT * FROM jv_companies ORDER BY name')
 def projects(c):return rows(c,'SELECT * FROM jv_projects ORDER BY id DESC')
@@ -42,6 +51,7 @@ def members(c,p):return rows(c,'SELECT m.*,c.name,c.code FROM jv_members m JOIN 
 
 def company(c,code,name,info,id=None):
     if not code.strip() or not name.strip():raise ValueError('법인코드와 법인명을 입력하세요.')
+    if c.execute('SELECT 1 FROM jv_companies WHERE code=? AND id<>?',(code.strip(),id or -1)).fetchone():raise ValueError('이미 사용 중인 법인코드입니다.')
     with c:
         if id:c.execute('UPDATE jv_companies SET code=?,name=?,info=? WHERE id=?',(code.strip(),name.strip(),json.dumps(info,ensure_ascii=False),id))
         else:c.execute('INSERT INTO jv_companies(code,name,info) VALUES(?,?,?)',(code.strip(),name.strip(),json.dumps(info,ensure_ascii=False)))
@@ -53,6 +63,8 @@ def project(c,name,owner,contract,supply,vat,start,end,entries,id=None):
     contract,supply,vat=map(num,[contract,supply,vat])
     if min(contract,supply,vat)<0 or contract!=supply+vat:raise ValueError('계약금액은 공급가액+VAT와 일치해야 합니다.')
     ids=[int(e['company_id']) for e in entries]
+    known={x['id'] for x in companies(c)}
+    if int(owner) not in known or set(ids)-known:raise ValueError('법인·담당자에 등록된 회사만 프로젝트에 연결할 수 있습니다.')
     if not entries or len(ids)!=len(set(ids)) or int(owner) not in ids:raise ValueError('당사를 포함해 중복 없이 회원사를 등록하세요.')
     if sum((num(e['share']) for e in entries),Decimal(0))!=100:raise ValueError('지분율 합계는 100%여야 합니다.')
     for e in entries:
@@ -60,12 +72,30 @@ def project(c,name,owner,contract,supply,vat,start,end,entries,id=None):
     with c:
         values=(name.strip(),owner,str(contract),str(supply),str(vat),start,end)
         if id:
-            if c.execute('SELECT 1 FROM jv_ledger WHERE project_id=?',(id,)).fetchone():raise ValueError('원장이 등록된 프로젝트의 지분 수정은 지원하지 않습니다. 정산 이력 보호를 위해 별도 프로젝트로 등록하세요.')
+            old={x['company_id']:x for x in members(c,id)}
+            for cid,m in old.items():
+                target=next((e for e in entries if int(e['company_id'])==cid),None)
+                referenced=member_referenced(c,m['id'],id,cid)
+                if not target and referenced:raise ValueError(m['name']+'에 원장·정산 자료가 연결되어 삭제할 수 없습니다. 회사 연결을 유지하세요.')
+                if target and referenced and (num(target['share'])!=num(m['share']) or bool(target['fee_enabled'])!=bool(m['fee_enabled'])):
+                    raise ValueError(m['name']+'의 지분율·관리비 적용 여부는 연결 자료가 있어 변경할 수 없습니다. 공사명·계약정보와 관리비 기본비율은 수정할 수 있습니다.')
+            previous=c.execute('SELECT owner_id FROM jv_projects WHERE id=?',(id,)).fetchone()
+            if previous and previous[0]!=owner and c.execute('SELECT 1 FROM jv_ledger WHERE project_id=?',(id,)).fetchone():raise ValueError('원장이 있는 프로젝트의 관리법인은 변경할 수 없습니다.')
             c.execute('UPDATE jv_projects SET name=?,owner_id=?,contract=?,supply=?,vat=?,start=?,end=? WHERE id=?',values+(id,))
-            c.execute('DELETE FROM jv_members WHERE project_id=?',(id,))
+            for cid,m in old.items():
+                if cid not in ids:c.execute('DELETE FROM jv_members WHERE id=?',(m['id'],))
         else:id=c.execute('INSERT INTO jv_projects(name,owner_id,contract,supply,vat,start,end) VALUES(?,?,?,?,?,?,?)',values).lastrowid
-        c.executemany('INSERT INTO jv_members(project_id,company_id,share,fee_enabled,fee_rate) VALUES(?,?,?,?,?)',[(id,e['company_id'],str(num(e['share'])),int(e['fee_enabled']),str(num(e['fee_rate']))) for e in entries])
+        for e in entries:
+            c.execute('INSERT INTO jv_members(project_id,company_id,share,fee_enabled,fee_rate) VALUES(?,?,?,?,?) ON CONFLICT(project_id,company_id) DO UPDATE SET share=excluded.share,fee_enabled=excluded.fee_enabled,fee_rate=excluded.fee_rate',
+                      (id,e['company_id'],str(num(e['share'])),int(e['fee_enabled']),str(num(e['fee_rate']))))
     return id
+
+def member_referenced(c,m,p,cid):
+    return any(c.execute(sql,args).fetchone() for sql,args in [
+        ('SELECT 1 FROM jv_ledger WHERE project_id=? AND company_id=?',(p,cid)),
+        ('SELECT 1 FROM jv_allocations WHERE member_id=?',(m,)),('SELECT 1 FROM jv_entries WHERE member_id=?',(m,)),
+        ('SELECT 1 FROM jv_documents WHERE member_id=?',(m,)),('SELECT 1 FROM jv_fee_groups WHERE member_id=?',(m,)),('SELECT 1 FROM jv_runs WHERE member_id=?',(m,)),
+        ('SELECT 1 FROM jv_closes WHERE project_id=? AND closed=1',(p,))])
 
 LEDGER_FIELDS=['posting_date','allocation_month','account','vendor','description','tax_supply','vat','invoice','receipt','note']
 def ledger(c,p):return rows(c,'SELECT l.*,c.name AS company FROM jv_ledger l JOIN jv_companies c ON c.id=l.company_id WHERE project_id=? ORDER BY posting_date,id',(p,))
@@ -79,10 +109,11 @@ def normalize(record):
 
 def add_ledger(c,p,company_id,records,blob=None,name='수기입력'):
     if company_id not in [m['company_id'] for m in members(c,p)]:raise ValueError('프로젝트 참여사만 원가를 등록할 수 있습니다.')
+    import joint_workflow as flow
     parsed=[];keys=set()
     for i,rec in enumerate(records,1):
         try:
-            r=normalize(rec);voucher=str(rec.get('voucher','')).strip();line=str(rec.get('line','')).strip()
+            r=normalize(rec);flow.ensure_open(c,p,r['allocation_month']);voucher=str(rec.get('voucher','')).strip();line=str(rec.get('line','')).strip()
             if blob is not None and (not voucher or not line):raise ValueError('중복 방지를 위해 전표번호와 전표행 식별값이 모두 필요합니다.')
             key='voucher:'+json.dumps([r['posting_date'],voucher,line],ensure_ascii=False) if blob is not None else 'manual:'+__import__('secrets').token_hex(16)
             if key in keys or c.execute('SELECT 1 FROM jv_ledger WHERE project_id=? AND company_id=? AND source_key=?',(p,company_id,key)).fetchone():raise ValueError('중복 전표입니다. 변경 전표는 자동 덮어쓰지 않습니다.')
@@ -95,6 +126,9 @@ def add_ledger(c,p,company_id,records,blob=None,name='수기입력'):
             digest=hashlib.sha256(blob).hexdigest()
             if c.execute('SELECT 1 FROM jv_batches WHERE project_id=? AND company_id=? AND digest=?',(p,company_id,digest)).fetchone():raise ValueError('이미 업로드한 파일입니다.')
             batch=c.execute('INSERT INTO jv_batches(project_id,company_id,digest,name) VALUES(?,?,?,?)',(p,company_id,digest,name)).lastrowid
+        if batch is not None:
+            import base64
+            c.execute('INSERT INTO jv_sources(batch_id,content) VALUES(?,?)',(batch,base64.b64encode(blob).decode('ascii')))
         c.executemany('INSERT INTO jv_ledger(project_id,company_id,'+','.join(LEDGER_FIELDS)+',source_key,batch_id) VALUES('+','.join(['?']*14)+')',[(p,company_id,*[r[k] for k in LEDGER_FIELDS],key,batch) for r,key in parsed])
     return len(parsed)
 
@@ -108,6 +142,8 @@ def allocate(c,p):
     ms=members(c,p)
     if not ms or sum((num(m['share']) for m in ms),Decimal(0))!=100:raise ValueError('지분 합계가 100%인지 확인하세요.')
     pending=rows(c,'SELECT * FROM jv_ledger l WHERE project_id=? AND NOT EXISTS(SELECT 1 FROM jv_allocations a WHERE a.ledger_id=l.id)',(p,))
+    import joint_workflow as flow
+    pending=[r for r in pending if not flow.is_closed(c,p,r['allocation_month'])]
     with c:
         for r in pending:
             bs=split(num(r['tax_supply'])+num(r['invoice'])+num(r['receipt']),ms);vs=split(r['vat'],ms)
@@ -118,6 +154,11 @@ def allocations(c,p,start,end):
     return rows(c,'''SELECT a.*,l.allocation_month,l.account,l.description,l.company_id AS investing_company,m.company_id,c.name FROM jv_allocations a JOIN jv_ledger l ON l.id=a.ledger_id JOIN jv_members m ON m.id=a.member_id JOIN jv_companies c ON c.id=m.company_id WHERE l.project_id=? AND l.allocation_month BETWEEN ? AND ? ORDER BY l.id,m.id''',(p,period(start),period(end)))
 
 def revise(c,p,ledger_id,changes):
+    import joint_workflow as flow
+    row=c.execute('SELECT allocation_month FROM jv_ledger WHERE id=? AND project_id=?',(ledger_id,p)).fetchone()
+    if not row:raise ValueError('원장을 확인하세요.')
+    flow.ensure_open(c,p,row[0])
+    flow.ensure_claim_unassigned(c,p,ledger_id)
     existing=rows(c,'SELECT a.* FROM jv_allocations a JOIN jv_ledger l ON l.id=a.ledger_id WHERE a.ledger_id=? AND l.project_id=?',(ledger_id,p))
     if set(x['id'] for x in existing)!=set(x['id'] for x in changes):raise ValueError('해당 전표의 모든 회원사 배분액을 함께 수정하세요.')
     if any(not str(x['reason']).strip() for x in changes):raise ValueError('수정 사유를 입력하세요.')
@@ -130,12 +171,16 @@ def entries(c,p,m,kind=None):
 
 def save_entry(c,p,m,kind,entry_date,start,end,payload,id=None):
     if m not in [x['id'] for x in members(c,p)]:raise ValueError('회원사를 확인하세요.')
-    if kind not in ['progress','subcontract','recovery','opening']:raise ValueError('입력 유형을 확인하세요.')
+    if kind not in ['receipt','progress','subcontract','recovery','opening']:raise ValueError('입력 유형을 확인하세요.')
     start,end=period(start),period(end)
     if start>end:raise ValueError('대상 기간을 확인하세요.')
+    import joint_workflow as flow
+    flow.ensure_open(c,p,start,end)
+    if id:flow.ensure_entry_editable(c,p,m,id)
     payload=dict(payload)
-    required={'progress':['supply','vat','fee_rate']+EXCLUSIONS,'subcontract':['supply','vat','paid_supply','paid_vat'],'recovery':['supply','vat'],'opening':['arrears','interest']}[kind]
+    required={'receipt':['supply','vat'],'progress':['supply','vat','fee_rate']+EXCLUSIONS,'subcontract':['supply','vat','paid_supply','paid_vat'],'recovery':['supply','vat'],'opening':['arrears','interest']}[kind]
     for k in required:payload[k]=str(num(payload.get(k,0)))
+    if kind=='receipt' and not str(payload.get('label','')).strip():raise ValueError('기성 구분을 입력하세요. 같은 기성의 분할 수령분은 같은 구분을 사용합니다.')
     if kind=='progress':
         if not 0<=num(payload['fee_rate'])<=100:raise ValueError('관리비율을 확인하세요.')
         payload['fee']=str(((num(payload['supply'])-sum((num(payload[k]) for k in EXCLUSIONS),Decimal(0)))*num(payload['fee_rate'])/100).quantize(Decimal('1'),rounding=ROUND_DOWN))
@@ -144,7 +189,8 @@ def save_entry(c,p,m,kind,entry_date,start,end,payload,id=None):
         if id:
             if not c.execute('SELECT 1 FROM jv_entries WHERE id=? AND project_id=? AND member_id=? AND kind=?',(id,p,m,kind)).fetchone():raise ValueError('수정할 자료가 없습니다.')
             c.execute('UPDATE jv_entries SET project_id=?,member_id=?,kind=?,entry_date=?,period_start=?,period_end=?,payload=? WHERE id=?',vals+(id,))
-        else:c.execute('INSERT INTO jv_entries(project_id,member_id,kind,entry_date,period_start,period_end,payload) VALUES(?,?,?,?,?,?,?)',vals)
+        else:id=c.execute('INSERT INTO jv_entries(project_id,member_id,kind,entry_date,period_start,period_end,payload) VALUES(?,?,?,?,?,?,?)',vals).lastrowid
+    return id
 
 def settlement(c,p,m,start,end):
     start,end=period(start),period(end)
@@ -158,6 +204,11 @@ def settlement(c,p,m,start,end):
         if e['period_start']<=end and e['period_end']>=start:
             if e['period_start']<start or e['period_end']>end:raise ValueError('선택 기간에 일부만 걸치는 수기 자료가 있습니다. 기간을 넓히거나 입력 기간을 나누세요.')
             selected.append(dict(e,data=json.loads(e['payload'])))
+    return assemble(c,p,m,raw,al,selected,start,end,unallocated)
+
+def assemble(c,p,m,raw,al,selected,start='',end='',unallocated=0):
+    project=next(x for x in projects(c) if x['id']==p);ms=members(c,p);member=next(x for x in ms if x['id']==m)
+    mine=[x for x in al if x['member_id']==m]
     def total(kind,key):return sum((num(e['data'].get(key,0)) for e in selected if e['kind']==kind),Decimal(0))
     base=sum((num(x['base']) for x in mine),Decimal(0));vat=sum((num(x['vat']) for x in mine),Decimal(0))
     # Member's directly invested base is deducted, not allocated to them twice.
@@ -182,6 +233,7 @@ def settlement(c,p,m,start,end):
 def snapshot(c,data,kind,number,issued,meta):
     if kind not in ['정산서','공문'] or not number.strip():raise ValueError('문서 종류와 문서번호를 확인하세요.')
     if data['unallocated']:raise ValueError('미배분 원장이 있습니다. 배분을 완료한 뒤 확정하세요.')
+    if c.execute('SELECT 1 FROM jv_documents WHERE number=?',(number.strip(),)).fetchone():raise ValueError('이미 사용한 문서번호입니다. 새 문서번호를 수동입력하세요.')
     payload=dict(data,meta=meta,kind=kind,number=number.strip(),issued=day(issued))
     with c:c.execute('INSERT INTO jv_documents(project_id,member_id,kind,number,issued,snapshot) VALUES(?,?,?,?,?,?)',(data['project']['id'],data['member']['id'],kind,number.strip(),day(issued),json.dumps(payload,ensure_ascii=False)))
     return payload
