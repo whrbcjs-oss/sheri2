@@ -34,12 +34,12 @@ def analyze_upload(blob,name,year=None):
 
 def report_view(report,embedded=True):
     html=render_html(report,embedded=embedded)
-    components.html(html,height=1450,scrolling=True)
+    components.html(html,height=2100,scrolling=True)
 
 
 def upload_page(c,year,user):
     st.subheader(f'{year}년 월별 원장 업로드')
-    st.caption('원장 읽기·화면 버전: 2026.10.30.1')
+    st.caption('원장 읽기·화면 버전: 2026.10.30.2')
     existing=store.imports(c)
     counts=c.execute("SELECT COUNT(*),COALESCE(SUM(CASE WHEN department='데크거더' THEN 1 ELSE 0 END),0) FROM monthly_ledger").fetchone()
     cards=st.columns(4)
@@ -203,9 +203,9 @@ def render(user):
         if '_lb_next_page' in st.session_state:
             st.session_state['lb_monthly_page']=st.session_state.pop('_lb_next_page')
         page=st.radio('월별보고 메뉴',['원장 업로드','통장입출금기준 현황','원장 조회','보고서 메모·결재','이월액·조정','백업 관리'],key='lb_monthly_page')
-    st.markdown('<div class="lb-breadcrumb"><span>엘비데크 월별보고 / '+page+'</span><span class="lb-badge">공급가액 기준 · 부가세 제외</span></div>',unsafe_allow_html=True)
-    st.title('엘비데크 월별보고')
-    st.caption('원장 업로드 → 월별 집계 → 부가세 제외 보고서 · 자체결산 자료와 분리 저장')
+    if page!='통장입출금기준 현황':
+        st.markdown('<div class="lb-breadcrumb"><span>엘비데크 월별보고 / '+page+'</span><span class="lb-badge">공급가액 기준 · 부가세 제외</span></div>',unsafe_allow_html=True)
+        st.title('엘비데크 월별보고')
     if '_lb_success' in st.session_state:st.success(st.session_state.pop('_lb_success'))
     c=store.connect(int(year))
     if page=='원장 업로드':upload_page(c,int(year),user);return
@@ -215,13 +215,13 @@ def render(user):
     data=store.report(c,int(year))
     if not data:
         st.info('저장된 월별 자료가 없습니다. 원장 업로드에서 해당 월 보통예금 원장을 저장하세요.');return
-    st.caption(f"{year}년 · 저장된 월: {', '.join(str(m)+'월' for m in data['months'])}")
     if page=='통장입출금기준 현황':
-        st.caption('결재란과 노임·미불 메모, 셀 포스트잇은 왼쪽 보고서 메모·결재 메뉴에서 입력합니다.')
         if not data['opening_confirmed']:st.info('이월 정산액이 아직 입력되지 않았습니다. 월별 수입·지출은 계산되며 최종 정산잔액은 미확인으로 표시합니다.')
-        st.download_button('보고서 HTML 다운로드 · 열어서 인쇄/PDF 저장',render_html(data).encode('utf-8'),
-                           file_name=f'엘비데크_월별보고_{year}.html',mime='text/html')
         report_view(data)
+        with st.expander('보고서 파일 저장 · 사용 안내'):
+            st.download_button('보고서 HTML 다운로드',render_html(data).encode('utf-8'),
+                               file_name=f'엘비데크_월별보고_{year}.html',mime='text/html')
+            st.caption('결재란·노임·미불 메모와 포스트잇은 보고서 메모·결재 메뉴에서 입력합니다. 화면 버전: 2026.10.30.2')
     elif page=='원장 조회':
         frame=store.ledger(c)
         only_deck=st.checkbox('데크거더 집계 대상만 보기',value=True)

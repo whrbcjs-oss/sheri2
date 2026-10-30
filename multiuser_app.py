@@ -49,27 +49,28 @@ def require_admin():
 def account_panel(user):
     with st.sidebar:
         st.caption(f"{user['display_name']} ({user['username']}) · {'관리자' if user['admin'] else '사용자'}")
-        if st.button('로그아웃'):
-            shared.logout(st.session_state.get('_auth_token'))
-            st.session_state.clear()
-            st.rerun()
-        st.button('최신 자료 새로고침', on_click=refresh,
-                  help='저장하지 않은 입력은 지워집니다.')
-        with st.expander('내 비밀번호 변경'):
-            with st.form('my_password'):
-                old = st.text_input('현재 비밀번호', type='password')
-                new = st.text_input('새 비밀번호 (12자 이상)', type='password')
-                confirm = st.text_input('새 비밀번호 확인', type='password')
-                submit = st.form_submit_button('비밀번호 변경')
-            if submit:
-                try:
-                    if new != confirm:
-                        raise ValueError('새 비밀번호가 일치하지 않습니다.')
-                    shared.change_password(st.session_state['_auth_token'], old, new)
-                    st.session_state.clear()
-                    st.rerun()
-                except (ValueError, PermissionError) as e:
-                    st.error(str(e))
+        with st.expander('계정 · 새로고침'):
+            if st.button('로그아웃'):
+                shared.logout(st.session_state.get('_auth_token'))
+                st.session_state.clear()
+                st.rerun()
+            st.button('최신 자료 새로고침', on_click=refresh,
+                      help='저장하지 않은 입력은 지워집니다.')
+            with st.expander('내 비밀번호 변경'):
+                with st.form('my_password'):
+                    old = st.text_input('현재 비밀번호', type='password')
+                    new = st.text_input('새 비밀번호 (12자 이상)', type='password')
+                    confirm = st.text_input('새 비밀번호 확인', type='password')
+                    submit = st.form_submit_button('비밀번호 변경')
+                if submit:
+                    try:
+                        if new != confirm:
+                            raise ValueError('새 비밀번호가 일치하지 않습니다.')
+                        shared.change_password(st.session_state['_auth_token'], old, new)
+                        st.session_state.clear()
+                        st.rerun()
+                    except (ValueError, PermissionError) as e:
+                        st.error(str(e))
         return st.radio('작업 화면', ['결산 업무', '변경 이력'] + (['사용자 관리'] if user['admin'] else []), key='_workspace')
 
 
@@ -167,8 +168,7 @@ with shared.LOCK:
     elif workspace == '변경 이력':
         history_panel(user)
     else:
-        with st.sidebar:
-            program=st.radio('프로그램 선택',['자체결산 보고','엘비데크 월별보고'],key='main_system')
+        program=st.radio('프로그램 선택',['자체결산 보고','엘비데크 월별보고'],key='main_system',horizontal=True,label_visibility='collapsed')
         if st.session_state.get('_conflict'):
             st.error(st.session_state['_conflict'])
             st.info('저장되지 않은 입력을 복사해 보관한 뒤 왼쪽의 최신 자료 새로고침을 누르세요.')

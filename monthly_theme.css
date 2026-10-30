@@ -42,3 +42,23 @@
 #root [data-testid="stSidebar"] [data-testid="stRadioOption"][data-selected="true"]>div>div:first-child>div{background:white!important}
 #root [data-testid="stSidebar"] button[kind="primary"] p{color:white!important}
 #root [data-testid="stAlertContentInfo"]{background:#eefaf3;color:#244a34;border-radius:6px;padding:8px}
+
+/* One application navigation bar; content starts alongside the sidebar. */
+#root [data-testid="stMainBlockContainer"]{max-width:none!important;padding:1.4rem 2rem 3rem!important}
+#root [data-testid="stSidebar"]{min-width:255px;max-width:285px}
+#root [data-testid="stSidebarUserContent"]{padding-top:0}
+#root [data-testid="stSidebarContent"]::before{padding:18px 20px;margin-bottom:0}
+#root [data-testid="stRadio"]:has(input[name]) [role="radiogroup"]{gap:6px}
+#root [data-testid="stMain"] [data-testid="stRadio"]:has(input[value="엘비데크 월별보고"]) [role="radiogroup"]{border-bottom:1px solid #e0e3e7;padding-bottom:8px}
+#root [data-testid="stMain"] [data-testid="stRadio"]:has(input[value="엘비데크 월별보고"]) label{padding:12px 20px;border-radius:0}
+#root [data-testid="stMain"] [data-testid="stRadio"]:has(input[value="엘비데크 월별보고"]) label:has(input:checked){border-bottom:3px solid #009f57;color:#008d4b;font-weight:750}
+@media(max-width:800px){#root [data-testid="stMainBlockContainer"]{padding:1rem!important}}
+
+#root [data-testid="stMainBlockContainer"]{padding-top:4.5rem!important}
+#root [data-testid="stSidebarHeader"]{height:1.5rem;min-height:1.5rem;padding:0}
+#root [data-testid="stSidebar"] [data-testid="stLogoSpacer"]{display:none}
+#root .st-key-main_system [role="radiogroup"]{border-bottom:1px solid #e0e3e7;padding-bottom:8px}
+#root .st-key-main_system [data-testid="stRadioOption"]{padding:10px 20px;border-radius:0}
+#root .st-key-main_system [data-testid="stRadioOption"][data-selected="true"]{border-bottom:3px solid #009f57}
+#root .st-key-main_system [data-testid="stRadioOption"][data-selected="true"] p{color:#008d4b;font-weight:750}
+#root .st-key-main_system [data-testid="stRadioOption"]>div>div:first-child{display:none}
