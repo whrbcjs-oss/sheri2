@@ -62,3 +62,5 @@
 #root .st-key-main_system [data-testid="stRadioOption"][data-selected="true"]{border-bottom:3px solid #009f57}
 #root .st-key-main_system [data-testid="stRadioOption"][data-selected="true"] p{color:#008d4b;font-weight:750}
 #root .st-key-main_system [data-testid="stRadioOption"]>div>div:first-child{display:none}
+
+#root [data-testid="stMetricValue"] p{font-size:28px!important;line-height:1.3;font-variant-numeric:tabular-nums}

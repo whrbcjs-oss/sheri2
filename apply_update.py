@@ -8,7 +8,7 @@ import shutil
 import sys
 
 ROOT=Path(__file__).resolve().parent
-FILES=['multiuser_app.py','collaboration.py','monthly_app.py','monthly_store.py',
+FILES=['joint_app.py','joint_store.py','joint_report.py','joint_import.py','multiuser_app.py','collaboration.py','monthly_app.py','monthly_store.py',
        'monthly_report_preview.py','monthly_preview_template.html','monthly_theme.css','monthly_ledger.py','requirements.lock',
        'requirements.txt','repair_dependencies.bat']
 
