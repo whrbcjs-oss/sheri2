@@ -39,7 +39,7 @@ def report_view(report,embedded=True):
 
 def upload_page(c,year,user):
     st.subheader(f'{year}년 월별 원장 업로드')
-    st.caption('원장 읽기·화면 버전: 2026.10.30.3')
+    st.caption('원장 읽기·화면 버전: 2026.10.30.4')
     existing=store.imports(c)
     counts=c.execute("SELECT COUNT(*),COALESCE(SUM(CASE WHEN department='데크거더' THEN 1 ELSE 0 END),0) FROM monthly_ledger").fetchone()
     cards=st.columns(4)
@@ -221,7 +221,7 @@ def render(user):
         with st.expander('보고서 파일 저장 · 사용 안내'):
             st.download_button('보고서 HTML 다운로드',render_html(data).encode('utf-8'),
                                file_name=f'엘비데크_월별보고_{year}.html',mime='text/html')
-            st.caption('결재란·노임·미불 메모와 포스트잇은 보고서 메모·결재 메뉴에서 입력합니다. 화면 버전: 2026.10.30.3')
+            st.caption('결재란·노임·미불 메모와 포스트잇은 보고서 메모·결재 메뉴에서 입력합니다. 화면 버전: 2026.10.30.4')
     elif page=='원장 조회':
         frame=store.ledger(c)
         only_deck=st.checkbox('데크거더 집계 대상만 보기',value=True)
