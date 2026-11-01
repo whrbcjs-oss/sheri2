@@ -39,9 +39,10 @@ def used(c,p,m,key,exclude=None):
     return ids
 
 def ensure_entry_editable(c,p,m,id):
-    e=c.execute('SELECT kind,period_start,period_end FROM jv_entries WHERE id=? AND project_id=? AND member_id=?',(id,p,m)).fetchone()
+    e=c.execute('SELECT kind,period_start,period_end,entry_date FROM jv_entries WHERE id=? AND project_id=? AND member_id=?',(id,p,m)).fetchone()
     if not e:raise ValueError('수정할 내역이 없습니다.')
-    ensure_open(c,p,e[1],e[2]);key={'receipt':'receipts','subcontract':'subcontracts','recovery':'recoveries'}.get(e[0])
+    start,end=(e[3][:7],e[3][:7]) if e[0] in ['receipt','subcontract'] else (e[1],e[2])
+    ensure_open(c,p,start,end);key={'receipt':'receipts','subcontract':'subcontracts','recovery':'recoveries'}.get(e[0])
     if key and id in used(c,p,m,key):raise ValueError('정산 건에 포함된 내역입니다. 해당 정산의 선택을 해제한 뒤 수정하세요.')
     if e[0]=='receipt' and any(id in json.loads(g['receipt_ids']) for g in groups(c,p,m)):raise ValueError('관리비·보험료 정산에 연결된 수령 내역입니다. 관리비 정산의 연결을 해제하거나 삭제한 뒤 수정하세요.')
     if e[0]=='progress':raise ValueError('이전 버전 자료입니다. 자동 이전된 공사대금과 관리비 정산에서 수정하세요.')
@@ -86,7 +87,7 @@ def save_group(c,p,m,label,receipt_ids,settings,id=None):
     lines=fee_lines(c,p,m,receipt_ids,settings)
     relevant=set(receipt_ids)|set(json.loads(old['receipt_ids']) if id else [])
     for e in source_entries(c,p,m,'receipt'):
-        if e['id'] in relevant:ensure_open(c,p,e['period_start'],e['period_end'])
+        if e['id'] in relevant:ensure_open(c,p,e['entry_date'][:7])
     with c:
         values=(p,m,label.strip(),json.dumps(list(receipt_ids)),json.dumps(lines,ensure_ascii=False))
         if id:c.execute('UPDATE jv_fee_groups SET project_id=?,member_id=?,label=?,receipt_ids=?,calculations=? WHERE id=?',values+(id,))
@@ -99,7 +100,7 @@ def delete_group(c,p,m,id):
     if id in used(c,p,m,'fees'):raise ValueError('정산 건의 선택을 먼저 해제하세요.')
     ids=json.loads(g['receipt_ids'])
     for e in source_entries(c,p,m,'receipt'):
-        if e['id'] in ids:ensure_open(c,p,e['period_start'],e['period_end'])
+        if e['id'] in ids:ensure_open(c,p,e['entry_date'][:7])
     with c:
         c.execute('DELETE FROM jv_legacy_map WHERE fee_id=?',(id,))
         c.execute('DELETE FROM jv_fee_groups WHERE id=?',(id,))
@@ -132,34 +133,34 @@ def selected_settlement(c,p,m,selection):
     if not set(sel['receipts'])<=set(receipts) or not set(sel['fees'])<=set(gs):raise ValueError('다른 프로젝트·회원사의 자료를 선택할 수 없습니다.')
     claims={x['id']:x for x in claim_rows(c,p,m)}
     if not set(sel['claims'])<=set(claims):raise ValueError('선택한 청구 내역에 미배분 또는 다른 프로젝트 자료가 있습니다.')
-    chosen=[];management=[];covered=set();member=next(x for x in db.members(c,p) if x['id']==m)
+    warnings=[];chosen=[];management=[];covered=set();member=next(x for x in db.members(c,p) if x['id']==m)
     for gid in sel['fees']:
         g=gs[gid];ids=set(json.loads(g['receipt_ids']))
-        if not ids<=set(sel['receipts']):raise ValueError('선택한 관리비 정산에 포함된 공사대금 수령 건을 모두 선택하세요.')
+        if not ids<=set(sel['receipts']):warnings.append('관리비·보험료 정산 범위와 선택한 공사대금 수령 범위가 다릅니다. 선택한 금액만 반영했습니다.')
         if ids&covered:raise ValueError('관리비 정산의 공사대금이 중복되었습니다.')
         covered|=ids
         for v in json.loads(g['calculations']):management.append(dict(id=-gid,kind='progress',entry_date='',period_start='',period_end='',data=v))
-    if member['fee_enabled'] and set(sel['receipts'])-covered:raise ValueError('선택한 공사대금에 대한 관리비·보험료 정산을 먼저 등록하고 함께 선택하세요.')
+    if member['fee_enabled'] and set(sel['receipts'])-covered:warnings.append('일부 공사대금의 관리비·보험료가 미선택 상태입니다. 미선택 공제액은 0원으로 표시합니다.')
     receipt_list=[]
     for rid in sel['receipts']:
         e=receipts[rid];v=dict(e['data'],fee='0',산재보험='0',고용보험='0');receipt_list.append(dict(e,data=v))
-        if rid not in covered:
-            management.append(dict(e,kind='progress',data=dict(v,fee_rate='0',**{k:'0' for k in db.EXCLUSIONS})))
-    # Fee/insurance amounts appear on the final receipt of each milestone.
-    by_id={e['id']:e for e in receipt_list}
+    by_id={e['id']:e for e in receipt_list};deduction_entries=[]
     for e in management:
-        ids=e['data'].get('receipt_ids',[])
+        ids=[id for id in e['data'].get('receipt_ids',[]) if id in by_id]
         if ids:
             last=max(ids,key=lambda id:(receipts[id]['entry_date'],id));v=by_id[last]['data']
             for k in ['fee','산재보험','고용보험']:v[k]=str(db.num(v[k])+db.num(e['data'].get(k,0)))
+        else:
+            v=dict(e['data'],supply='0',vat='0');deduction_entries.append(dict(e,data=v))
     chosen.extend(management)
     for kind,key in [('subcontract','subcontracts'),('recovery','recoveries')]:
         source={e['id']:e for e in source_entries(c,p,m,kind)}
         if not set(sel[key])<=set(source):raise ValueError('선택한 수기 내역이 해당 프로젝트·회원사의 자료가 아닙니다.')
         chosen.extend(source[id] for id in sel[key])
-    raw=[x for x in db.ledger(c,p) if x['id'] in sel['claims']];al=[x for x in db.allocations(c,p,'2000-01','2100-12') if x['ledger_id'] in sel['claims']]
-    d=db.assemble(c,p,m,raw,al,chosen)
-    d.update(selection=sel,selection_mode=True,receipt_entries=sorted(receipt_list,key=lambda x:(x['entry_date'],x['id'])),management_entries=management)
+    claim_ids=set(sel['claims'])
+    raw=[x for x in db.ledger(c,p) if x['id'] in claim_ids];al=[x for x in db.allocations(c,p,'2000-01','2100-12') if x['ledger_id'] in claim_ids]
+    d=db.assemble(c,p,m,raw,al,chosen,receipts=receipt_list,claim_only=True)
+    d.update(selection=sel,selection_mode=True,receipt_entries=sorted(receipt_list,key=lambda x:(x['entry_date'],x['id'])),management_entries=management,deduction_entries=deduction_entries,warnings=warnings)
     return d
 
 def save_run(c,p,m,name,selection,id=None):
@@ -182,7 +183,7 @@ def month_letter(c,p,m,month):
     if any(e['period_start']<=month<=e['period_end'] and (e['period_start']!=month or e['period_end']!=month) for e in opening):raise ValueError('이전 버전의 전월 미수·이자가 여러 달에 걸쳐 있습니다. 해당 내역을 선택해 배분연월 하나로 수정한 뒤 마감하세요.')
     selected=[e for e in opening if e['period_start']==month and e['period_end']==month]
     pending=sum(not c.execute('SELECT 1 FROM jv_allocations WHERE ledger_id=?',(r['id'],)).fetchone() for r in raw)
-    return db.assemble(c,p,m,raw,al,selected,month,month,pending)
+    return db.assemble(c,p,m,raw,al,selected,month,month,pending,claim_only=True)
 
 def close_month(c,p,month,token):
     user=shared.validate_session(token)
@@ -194,12 +195,22 @@ def close_month(c,p,month,token):
     ms=db.members(c,p);letters={str(m['id']):month_letter(c,p,m['id'],month) for m in ms}
     if any(d['unallocated'] for d in letters.values()):raise ValueError('미배분 원장이 있습니다. 원가배분을 완료한 뒤 마감하세요.')
     al=db.allocations(c,p,month,month)
+    by_ledger={}
+    for a in al:by_ledger.setdefault(a['ledger_id'],[]).append(a)
     for r in raw:
-        allocated=[a for a in al if a['ledger_id']==r['id']]
+        allocated=by_ledger.get(r['id'],[])
         if {a['member_id'] for a in allocated}!={m['id'] for m in ms}:raise ValueError('회원사 배분이 누락되었습니다.')
         if sum((db.num(a['base']) for a in allocated),Decimal(0))!=sum((db.num(r[k]) for k in ['tax_supply','invoice','receipt']),Decimal(0)) or sum((db.num(a['vat']) for a in allocated),Decimal(0))!=db.num(r['vat']):raise ValueError('원장과 배분 합계가 일치하지 않습니다.')
+    from joint_allocation import details,effective_details,BUCKETS
+    pieces,unknown=effective_details(raw,al,details(c,p,month))
+    if unknown:raise ValueError('기존 혼합 증빙의 배분 항목을 확인하거나 해당월을 재배분한 뒤 마감하세요.')
+    for r in raw:
+        for k in BUCKETS:
+            if sum((pieces[(a['ledger_id'],a['member_id'])][k] for a in by_ledger.get(r['id'],[])),Decimal(0))!=db.num(r[k]):raise ValueError('증빙별 배분 합계가 원장과 일치하지 않습니다.')
     originals=db.rows(c,'SELECT b.id,b.name,b.digest,s.content FROM jv_batches b JOIN jv_sources s ON s.batch_id=b.id WHERE b.id IN (SELECT DISTINCT batch_id FROM jv_ledger WHERE project_id=? AND allocation_month=?)',(p,month))
-    package=dict(month=month,project=next(x for x in db.projects(c) if x['id']==p),ledger=raw,allocations=al,letters=letters,originals=originals)
+    from joint_allocation import details
+    prior=[r for r in db.ledger(c,p) if r['allocation_month']<month]
+    package=dict(prior_ledger=prior,allocation_details=details(c,p,month),month=month,project=next(x for x in db.projects(c) if x['id']==p),ledger=raw,allocations=al,letters=letters,originals=originals)
     text=json.dumps(package,ensure_ascii=False)
     with c:
         c.execute('INSERT INTO jv_closes(project_id,month,closed,closed_by,snapshot) VALUES(?,?,1,?,?) ON CONFLICT(project_id,month) DO UPDATE SET closed=1,closed_by=excluded.closed_by,closed_at=CURRENT_TIMESTAMP,snapshot=excluded.snapshot',(p,month,user['username'],text))

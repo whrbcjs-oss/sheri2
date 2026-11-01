@@ -41,6 +41,9 @@ def connect():
     ''')
     import joint_workflow as flow
     flow.install(c)
+    import joint_allocation as allocation
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE name='jv_allocation_details'").fetchone() and c.execute('SELECT 1 FROM jv_companies LIMIT 1').fetchone():shared.backup_database(c.path)
+    allocation.install(c)
     c=shared.protect(c)
     flow.migrate(c)
     return c
@@ -139,16 +142,8 @@ def split(amount,ms):
     return out
 
 def allocate(c,p):
-    ms=members(c,p)
-    if not ms or sum((num(m['share']) for m in ms),Decimal(0))!=100:raise ValueError('지분 합계가 100%인지 확인하세요.')
-    pending=rows(c,'SELECT * FROM jv_ledger l WHERE project_id=? AND NOT EXISTS(SELECT 1 FROM jv_allocations a WHERE a.ledger_id=l.id)',(p,))
-    import joint_workflow as flow
-    pending=[r for r in pending if not flow.is_closed(c,p,r['allocation_month'])]
-    with c:
-        for r in pending:
-            bs=split(num(r['tax_supply'])+num(r['invoice'])+num(r['receipt']),ms);vs=split(r['vat'],ms)
-            c.executemany('INSERT INTO jv_allocations(ledger_id,member_id,share,base,vat,original_base,original_vat) VALUES(?,?,?,?,?,?,?)',[(r['id'],m['id'],m['share'],str(b),str(v),str(b),str(v)) for m,b,v in zip(ms,bs,vs)])
-    return len(pending)
+    from joint_allocation import allocate as matrix_allocate
+    return matrix_allocate(c,p)
 
 def allocations(c,p,start,end):
     return rows(c,'''SELECT a.*,l.allocation_month,l.account,l.description,l.company_id AS investing_company,m.company_id,c.name FROM jv_allocations a JOIN jv_ledger l ON l.id=a.ledger_id JOIN jv_members m ON m.id=a.member_id JOIN jv_companies c ON c.id=m.company_id WHERE l.project_id=? AND l.allocation_month BETWEEN ? AND ? ORDER BY l.id,m.id''',(p,period(start),period(end)))
@@ -164,7 +159,9 @@ def revise(c,p,ledger_id,changes):
     if any(not str(x['reason']).strip() for x in changes):raise ValueError('수정 사유를 입력하세요.')
     for col,orig in [('base','original_base'),('vat','original_vat')]:
         if sum((num(x[col]) for x in changes),Decimal(0))!=sum((num(x[orig]) for x in existing),Decimal(0)):raise ValueError('회원사 배분 합계는 원장의 공급가액·VAT와 각각 일치해야 합니다.')
-    with c:c.executemany('UPDATE jv_allocations SET base=?,vat=?,reason=? WHERE id=?',[(str(num(x['base'])),str(num(x['vat'])),str(x['reason']),x['id']) for x in changes])
+    with c:
+        c.executemany('UPDATE jv_allocations SET base=?,vat=?,reason=? WHERE id=?',[(str(num(x['base'])),str(num(x['vat'])),str(x['reason']),x['id']) for x in changes])
+        c.execute('DELETE FROM jv_allocation_details WHERE ledger_id=?',(ledger_id,))
 
 def entries(c,p,m,kind=None):
     return rows(c,'SELECT * FROM jv_entries WHERE project_id=? AND member_id=?'+(' AND kind=?' if kind else '')+' ORDER BY entry_date,id',(p,m,kind) if kind else (p,m))
@@ -172,13 +169,18 @@ def entries(c,p,m,kind=None):
 def save_entry(c,p,m,kind,entry_date,start,end,payload,id=None):
     if m not in [x['id'] for x in members(c,p)]:raise ValueError('회원사를 확인하세요.')
     if kind not in ['receipt','progress','subcontract','recovery','opening']:raise ValueError('입력 유형을 확인하세요.')
+    if kind in ['receipt','subcontract']:start=end=day(entry_date)[:7]
     start,end=period(start),period(end)
     if start>end:raise ValueError('대상 기간을 확인하세요.')
     import joint_workflow as flow
     flow.ensure_open(c,p,start,end)
     if id:flow.ensure_entry_editable(c,p,m,id)
     payload=dict(payload)
-    required={'receipt':['supply','vat'],'progress':['supply','vat','fee_rate']+EXCLUSIONS,'subcontract':['supply','vat','paid_supply','paid_vat'],'recovery':['supply','vat'],'opening':['arrears','interest']}[kind]
+    required={'receipt':['supply','vat'],'progress':['supply','vat','fee_rate']+EXCLUSIONS,'subcontract':['supply','vat'],'recovery':['supply','vat'],'opening':['arrears','interest']}[kind]
+    if kind=='subcontract' and id:
+        old=c.execute('SELECT payload FROM jv_entries WHERE id=?',(id,)).fetchone()
+        if old:
+            previous=json.loads(old[0]);payload={**{k:previous[k] for k in ['paid_date','paid_supply','paid_vat'] if k in previous},**payload}
     for k in required:payload[k]=str(num(payload.get(k,0)))
     if kind=='receipt' and not str(payload.get('label','')).strip():raise ValueError('기성 구분을 입력하세요. 같은 기성의 분할 수령분은 같은 구분을 사용합니다.')
     if kind=='progress':
@@ -206,15 +208,15 @@ def settlement(c,p,m,start,end):
             selected.append(dict(e,data=json.loads(e['payload'])))
     return assemble(c,p,m,raw,al,selected,start,end,unallocated)
 
-def assemble(c,p,m,raw,al,selected,start='',end='',unallocated=0):
+def assemble(c,p,m,raw,al,selected,start='',end='',unallocated=0,receipts=None,claim_only=False):
     project=next(x for x in projects(c) if x['id']==p);ms=members(c,p);member=next(x for x in ms if x['id']==m)
     mine=[x for x in al if x['member_id']==m]
     def total(kind,key):return sum((num(e['data'].get(key,0)) for e in selected if e['kind']==kind),Decimal(0))
     base=sum((num(x['base']) for x in mine),Decimal(0));vat=sum((num(x['vat']) for x in mine),Decimal(0))
     # Member's directly invested base is deducted, not allocated to them twice.
     invested=sum((num(x['tax_supply'])+num(x['invoice'])+num(x['receipt']) for x in raw if x['company_id']==member['company_id']),Decimal(0)) if member['company_id']!=project['owner_id'] else Decimal(0)
-    sub=total('subcontract','supply');subvat=total('subcontract','vat');paid=total('subcontract','paid_supply')+total('subcontract','paid_vat')
-    received=total('progress','supply');fee=total('progress','fee') if member['fee_enabled'] else Decimal(0)
+    sub=total('subcontract','supply');subvat=total('subcontract','vat');paid=Decimal(0) if claim_only else total('subcontract','paid_supply')+total('subcontract','paid_vat')
+    received=total('progress','supply') if receipts is None else sum((num(e['data']['supply']) for e in receipts),Decimal(0));fee=total('progress','fee') if member['fee_enabled'] else Decimal(0)
     industrial=total('progress','산재보험');employment=total('progress','고용보험');deductions=fee+industrial+employment
     recovery=total('recovery','supply')+total('recovery','vat')+paid
     claim=base+vat-invested+sub+subvat
@@ -228,7 +230,7 @@ def assemble(c,p,m,raw,al,selected,start='',end='',unallocated=0):
         party_invested=sum((num(x['tax_supply'])+num(x['invoice'])+num(x['receipt']) for x in raw if x['company_id']==party['company_id']),Decimal(0)) if party['company_id']!=project['owner_id'] else Decimal(0)
         prior=[json.loads(e['payload']) for e in entries(c,p,party['id'],'opening') if start<=e['period_start']<=e['period_end']<=end]
         parties.append(dict(name=party['name'],share=party['share'],base=str(party_base),vat=str(party_vat),invested=str(party_invested),arrears=str(sum((num(e.get('arrears')) for e in prior),Decimal(0))),interest=str(sum((num(e.get('interest')) for e in prior),Decimal(0)))))
-    return dict(project=project,member=member,members=ms,start=start,end=end,amounts={k:str(v) for k,v in vals.items()},entries=selected,allocations=al,unallocated=unallocated,companies=companies(c),parties=parties)
+    return dict(project=project,member=member,members=ms,start=start,end=end,amounts={k:str(v) for k,v in vals.items()},entries=selected,allocations=al,unallocated=unallocated,companies=companies(c),parties=parties,claim_only=claim_only)
 
 def snapshot(c,data,kind,number,issued,meta):
     if kind not in ['정산서','공문'] or not number.strip():raise ValueError('문서 종류와 문서번호를 확인하세요.')

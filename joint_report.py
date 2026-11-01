@@ -43,7 +43,7 @@ def monthly_claims(d):
 
 def settlement_body(d,meta,number,issued):
     p,m,a=d['project'],d['member'],d['amounts'];entries=d['entries']
-    management=d.get('management_entries',[e for e in entries if e['kind']=='progress']);progress=d.get('receipt_entries',[e for e in entries if e['kind']=='progress']);recoveries=[e for e in entries if e['kind']=='recovery'];subs=[e for e in entries if e['kind']=='subcontract'];claims=monthly_claims(d)
+    management=d.get('management_entries',[e for e in entries if e['kind']=='progress']);progress=d.get('receipt_entries',[e for e in entries if e['kind']=='progress'])+d.get('deduction_entries',[]);recoveries=[e for e in entries if e['kind']=='recovery'];subs=[e for e in entries if e['kind']=='subcontract'];claims=monthly_claims(d)
     rates={e['data'].get('fee_rate',m['fee_rate']) for e in management}
     fee_label=('관리비 ('+(next(iter(rates)) if len(rates)==1 else '기성별')+('%)' if len(rates)==1 else ')')) if m['fee_enabled'] else '관리비 (미적용)'
     body='<section class="settlement-sheet"><div class="sheet-heading"><h1>■ 공동도급 공사원가 정산내역 · '+esc(m['name'])+' <span>'+esc(m['share'])+'%</span></h1><div>'+esc(p['name'])+'</div></div>'
@@ -67,7 +67,7 @@ def settlement_body(d,meta,number,issued):
             e=recoveries[i];v=e['data'];row+=td(short_date(e['entry_date']))+numeric_cells([v['supply'],v['vat'],num(v['supply'])+num(v['vat'])]);note=v.get('note','')
         else:row+='<td></td>'*4;note=''
         body+='<tr class="data-row">'+row+td('')+td(note,**{'class':'text-note'})+'</tr>'
-    base=num(a['base']);vat=num(a['vat']);invested=num(a['invested']);sub=num(a['subcontract']);subvat=num(a['subcontract_vat']);paid_supply=sum((num(e['data']['paid_supply']) for e in subs),num(0));paid_vat=sum((num(e['data']['paid_vat']) for e in subs),num(0));rs=sum((num(e['data']['supply']) for e in recoveries),num(0));rv=sum((num(e['data']['vat']) for e in recoveries),num(0))
+    base=num(a['base']);vat=num(a['vat']);invested=num(a['invested']);sub=num(a['subcontract']);subvat=num(a['subcontract_vat']);paid_supply=num(0) if d.get('claim_only') else sum((num(e['data'].get('paid_supply',0)) for e in subs),num(0));paid_vat=num(0) if d.get('claim_only') else sum((num(e['data'].get('paid_vat',0)) for e in subs),num(0));rs=sum((num(e['data']['supply']) for e in recoveries),num(0));rv=sum((num(e['data']['vat']) for e in recoveries),num(0))
     body+='<tr class="subtotal">'+td('',colspan='9')+td('소계(원가분담금)',colspan='2')+numeric_cells([base,vat,invested,base+vat-invested])+td('')+numeric_cells([rs,rv,rs+rv])+td('')+td('')+'</tr>'
     body+='<tr class="subtotal">'+td('',colspan='9')+td('소계(하도급대금)',colspan='2')+numeric_cells([sub,subvat,0,sub+subvat])+td('')+numeric_cells([paid_supply,paid_vat,paid_supply+paid_vat])+td('')+td('')+'</tr>'
     receipt_vat=sum((num(e['data']['vat']) for e in progress),num(0))
@@ -77,7 +77,7 @@ def settlement_body(d,meta,number,issued):
     # Supporting sheet 2 follows the supplied horizontal milestone layout.
     body+='<section class="support-sheet"><h2>■ 관리비 산출내역 · '+esc(m['name'])+'</h2><div class="sheet-scroll"><table id="management-grid"><thead><tr><th>구분</th>'
     slots=management or [None]
-    body+=''.join('<th>'+esc(e['data'].get('label') or e['entry_date'] if e else '기성 입력 전')+'</th>' for e in slots)+'<th>소계</th></tr></thead><tbody>'
+    body+=''.join('<th>'+esc(e['data'].get('label') or e['entry_date'] if e else '관리비·보험료 미선택')+'</th>' for e in slots)+'<th>소계</th></tr></thead><tbody>'
     lines=[('공급가액',lambda v:num(v['supply']))]+[(k,lambda v,k=k:num(v[k])) for k in EXCLUSIONS]+[('제외분 합계',lambda v:sum((num(v[k]) for k in EXCLUSIONS),num(0))),('관리대상액',lambda v:num(v['supply'])-sum((num(v[k]) for k in EXCLUSIONS),num(0))),('관리비',lambda v:num(v['fee']) if m['fee_enabled'] else num(0))]
     for label,fn in lines:
         if label=='관리비':
@@ -85,21 +85,30 @@ def settlement_body(d,meta,number,issued):
         values=[fn(e['data']) if e else num(0) for e in slots]
         body+='<tr class="'+('subtotal' if label in ['제외분 합계','관리대상액','관리비'] else '')+'">'+td(label)+numeric_cells(values+[sum(values,num(0))])+'</tr>'
     body+='</tbody></table></div><p class="sheet-bottom">보험료·제외항목은 회원사분 입력액입니다. 관리비는 기성별 원 미만 버림을 적용합니다.</p></section>'
-    # Supporting sheet 3 mirrors the claim/payment columns of the original.
-    body+='<section class="support-sheet"><h2>■ 하도급 청구 및 지급현황 ['+esc(m['name'])+']</h2><div class="sheet-scroll"><table id="subcontract-grid"><thead><tr>'
-    headers=['청구년월','업체명','공급가액','VAT','합계금액','지급일자','공급가액','VAT','지급액','미지급액','공종명','지급방식']
-    body+=''.join('<th>'+esc(x)+'</th>' for x in headers)+'</tr></thead><tbody>'
-    for i in range(max(10,len(subs))):
-        if i>=len(subs):body+='<tr class="data-row">'+'<td></td>'*12+'</tr>';continue
-        e=subs[i];v=e['data'];pay=num(v['paid_supply'])+num(v['paid_vat']);claim=num(v['supply'])+num(v['vat']);method=v.get('method','')
-        body+='<tr>'+td(short_date(e['entry_date']))+td(v.get('vendor',''))+numeric_cells([v['supply'],v['vat'],claim])+td(short_date(v.get('paid_date','')))+numeric_cells([v['paid_supply'],v['paid_vat'],pay,claim-pay])+td(v.get('work_type',''))+td(method)+'</tr>'
-    body+='<tr class="grand-total">'+td('합 계',colspan='2')+numeric_cells([sub,subvat,sub+subvat])+td('')+numeric_cells([paid_supply,paid_vat,paid_supply+paid_vat,sub+subvat-paid_supply-paid_vat])+td('')+td('')+'</tr></tbody></table></div></section>'
+    if d.get('claim_only'):
+        body+='<section class="support-sheet"><h2>■ 하도급 청구내역 ['+esc(m['name'])+']</h2><div class="sheet-scroll"><table id="subcontract-grid"><thead><tr>'
+        body+=''.join('<th>'+x+'</th>' for x in ['청구일','업체명','공급가액','VAT','공종명','지급방식','비고','합계금액'])+'</tr></thead><tbody>'
+        for e in subs:
+            v=e['data'];body+='<tr>'+td(short_date(e['entry_date']))+td(v.get('vendor',''))+numeric_cells([v['supply'],v['vat']])+td(v.get('work_type',''))+td(v.get('method',''))+td(v.get('note',''))+numeric_cells([num(v['supply'])+num(v['vat'])])+'</tr>'
+        body+='<tr class="grand-total">'+td('합 계',colspan='2')+numeric_cells([sub,subvat])+td('',colspan='3')+numeric_cells([sub+subvat])+'</tr></tbody></table></div></section>'
+    else:
+        # Supporting sheet 3 mirrors the claim/payment columns of the original.
+        body+='<section class="support-sheet"><h2>■ 하도급 청구 및 지급현황 ['+esc(m['name'])+']</h2><div class="sheet-scroll"><table id="subcontract-grid"><thead><tr>'
+        headers=['청구년월','업체명','공급가액','VAT','합계금액','지급일자','공급가액','VAT','지급액','미지급액','공종명','지급방식']
+        body+=''.join('<th>'+esc(x)+'</th>' for x in headers)+'</tr></thead><tbody>'
+        for i in range(max(10,len(subs))):
+            if i>=len(subs):body+='<tr class="data-row">'+'<td></td>'*12+'</tr>';continue
+            e=subs[i];v=e['data'];pay=num(v['paid_supply'])+num(v['paid_vat']);claim=num(v['supply'])+num(v['vat']);method=v.get('method','')
+            body+='<tr>'+td(short_date(e['entry_date']))+td(v.get('vendor',''))+numeric_cells([v['supply'],v['vat'],claim])+td(short_date(v.get('paid_date','')))+numeric_cells([v['paid_supply'],v['paid_vat'],pay,claim-pay])+td(v.get('work_type',''))+td(method)+'</tr>'
+        body+='<tr class="grand-total">'+td('합 계',colspan='2')+numeric_cells([sub,subvat,sub+subvat])+td('')+numeric_cells([paid_supply,paid_vat,paid_supply+paid_vat,sub+subvat-paid_supply-paid_vat])+td('')+td('')+'</tr></tbody></table></div></section>'
     return body
 
 
 def letter_body(d,meta,number,issued,owner,info):
     m,p,a=d['member'],d['project'],d['amounts'];title=meta.get('title') or period_label(d['start'],d['end'])+' 공동원가 안분정산 및 자금청구의 건'
-    contacts=' '.join(str(info.get(k,'')) for k in ['직급','담당자','직급2','담당자2']).strip()
+    contact1=meta['contact1'] if 'contact1' in meta else ' '.join(str(info.get(k,'')) for k in ['직급','담당자']).strip()
+    contact2=meta['contact2'] if 'contact2' in meta else ' '.join(str(info.get(k,'')) for k in ['직급2','담당자2']).strip()
+    contacts=meta.get('contact_separator',' / ').join(x for x in [contact1,contact2] if x)
     body='<article class="official-letter"><h1 class="letter-company">'+esc(owner['name'])+'</h1><div class="letter-address">발신 : '+esc(info.get('주소',''))+' / 전화 '+esc(info.get('전화',''))+' / FAX '+esc(info.get('팩스',''))+'<br><span>담당자 : '+esc(contacts)+'</span></div>'
     body+='<div class="letter-top"><dl class="letter-fields">'
     for label,value in [('문서번호',number),('발신일자',str(issued).replace('-','.')),('수 신',m['name']),('참 조',meta.get('reference','공동도급 담당자')),('제 목',title)]:body+='<div><dt>'+esc(label)+' :</dt><dd>'+esc(value)+'</dd></div>'
@@ -141,6 +150,7 @@ CSS='''
 def render(d,kind='정산서',meta=None,printable=True):
     meta=meta or d.get('meta',{});co={x['id']:x for x in d['companies']};owner=co[d['project']['owner_id']];info=json.loads(owner['info']);issued=d.get('issued',meta.get('issued',''));number=d.get('number',meta.get('number','미확정'))
     letter=kind=='공문';body=letter_body(d,meta,number,issued,owner,info) if letter else settlement_body(d,meta,number,issued)
+    if d.get('warnings'):body='<div class="preview-notes">'+''.join('<p>'+esc(x)+'</p>' for x in d['warnings'])+'</div>'+body
     status='확정 발행본' if 'snapshot_id' in d or d.get('number') else '미확정 미리보기'
     page='A4 portrait' if letter else 'A3 landscape'
     control='<button onclick="window.print()">인쇄 / PDF 저장</button>' if printable else '<button disabled>월 마감 후 출력 가능</button>'
@@ -160,7 +170,11 @@ def monthly_package(package,member_id,meta):
     alloc_rows=[[r['ledger_id'],r['allocation_month'],r['name'],r['account'],r['description'],r['share'],money(r['base']),money(r['vat']),money(num(r['base'])+num(r['vat'])),r['reason']] for r in package['allocations']]
     def document(title,headers,records):
         return '<!doctype html><html lang="ko"><meta charset="utf-8"><title>'+esc(title)+'</title><style>'+CSS+'@page{size:A3 landscape;margin:12mm}table{font-size:12px}td{white-space:normal}</style><body><div class="tools"><button onclick="window.print()">인쇄 / PDF 저장</button></div><main class="document"><h1>'+esc(title)+'</h1><p>'+esc(project)+' · '+esc(month)+' · 마감 보관본</p>'+table(headers,records)+'</main></body></html>'
-    ledger_html=document('해당월 원장',ledger_headers,ledger_rows);alloc_html=document('원가배분내역서',alloc_headers,alloc_rows)
+    ledger_rows.append(['합 계','','','','','','']+[money(sum((num(r[k]) for r in package['ledger']),num(0))) for k in ['tax_supply','vat','invoice','receipt']]+[money(sum((sum((num(r[k]) for k in ['tax_supply','vat','invoice','receipt']),num(0)) for r in package['ledger']),num(0))),'',''])
+    ledger_html=document('해당월 원장',ledger_headers,ledger_rows)
+    from joint_allocation import matrix_data,render_matrix
+    data=matrix_data(package['project'],package['letters'][str(member_id)]['members'],package['ledger'],package['allocations'],package.get('prior_ledger',[]),package.get('allocation_details',[]),prior_known='prior_ledger' in package)
+    alloc_html=render_matrix(data,month)
     stream=BytesIO()
     with zipfile.ZipFile(stream,'w',zipfile.ZIP_DEFLATED) as z:
         for name,html in [('공문.html',letter),('해당월_원장.html',ledger_html),('원가배분내역서.html',alloc_html)]:z.writestr(name,html.encode('utf-8'))

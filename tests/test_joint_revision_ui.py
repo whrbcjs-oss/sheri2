@@ -21,7 +21,7 @@ class RevisionUI(unittest.TestCase):
         self.assertNotIn('가상 회원사',member.options);self.assertIn('다른 회원사',member.options)
         self.assertFalse(any(x.label.startswith(('시작 연월','종료 연월')) for x in at.text_input))
         at.session_state['jv_page']='기성·하도급·회수';at.run();self.assertFalse(at.exception,str(at.exception))
-        for title in ['공사대금 입력','관리비 및 보험료 입력','하도급 청구 및 지급현황 입력','회수내역 입력']:self.assertIn(title,[t.label for t in at.tabs])
+        for title in ['공사대금 입력','관리비 및 보험료 입력','하도급 청구내역','회수내역 입력']:self.assertIn(title,[t.label for t in at.tabs])
     def test_month_close_enables_downloads_and_reopening_disables_them(self):
         h=self.h;h.ledger();db.allocate(h.c,h.p)
         at=self.app('월 마감·보고서 출력');at.run()

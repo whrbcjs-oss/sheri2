@@ -45,7 +45,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('대상 기간:',render(d));self.assertIn('letter-rule',render(d,'공문'))
     def test_selection_rejects_partial_groups_cross_member_and_duplicate_runs(self):
         a=self.receipt('기성',100);g=f.save_group(self.c,self.p,self.m,'그룹',[a],{'기성':{'fee_rate':3}})
-        with self.assertRaisesRegex(ValueError,'모두'):f.selected_settlement(self.c,self.p,self.m,dict(self.selection(),fees=[g]))
+        preview=f.selected_settlement(self.c,self.p,self.m,dict(self.selection(),fees=[g]));self.assertTrue(preview['warnings']);self.assertEqual(db.num(preview['amounts']['received']),0)
         s=dict(self.selection(),receipts=[a],fees=[g]);id=f.save_run(self.c,self.p,self.m,'첫 정산',s)
         f.save_run(self.c,self.p,self.m,'수정 정산명',s,id)
         with self.assertRaisesRegex(ValueError,'중복 정산'):f.save_run(self.c,self.p,self.m,'두 번째',s)
@@ -64,7 +64,7 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(ValueError):f.reopen(self.c,self.p,'2026-01',self.token,'')
         f.reopen(self.c,self.p,'2026-01',self.token,'입력 수정');self.assertFalse(f.is_closed(self.c,self.p,'2026-01'))
         with self.assertRaises(ValueError):f.closed_package(self.c,self.p,'2026-01')
-        self.ledger(amount=200);db.allocate(self.c,self.p);new=f.close_month(self.c,self.p,'2026-01',self.token)
+        self.ledger(amount=200);__import__('joint_allocation').allocate(self.c,self.p,'2026-01',rebuild=True);new=f.close_month(self.c,self.p,'2026-01',self.token)
         self.assertEqual(len(package['ledger']),1);self.assertEqual(len(new['ledger']),2)
         self.assertEqual(self.c.execute('SELECT count(*) FROM jv_close_history').fetchone()[0],3)
     def test_closed_bundle_has_original_month_ledger_allocation_and_letter(self):

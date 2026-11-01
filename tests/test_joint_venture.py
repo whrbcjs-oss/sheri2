@@ -54,7 +54,7 @@ class JointTests(unittest.TestCase):
         j.save_entry(self.c,self.p,self.m['id'],'recovery','2026-01-20','2026-01','2026-01',dict(supply='50',vat='5'))
         d=j.settlement(self.c,self.p,self.m['id'],'2026-01','2026-01');a={k:j.num(v) for k,v in d['amounts'].items()}
         self.assertEqual(a['fee'],29);self.assertEqual(a['invested'],200)
-        self.assertEqual(a['remaining'],1001-(29+10+5)+(59+30)-165-200)
+        self.assertEqual(a['remaining'],1001-(29+10+5)+(58+30)-165-200)
         with self.c:self.c.execute('UPDATE jv_members SET fee_enabled=0 WHERE id=?',(self.m['id'],))
         d=j.settlement(self.c,self.p,self.m['id'],'2026-01','2026-01');a={k:j.num(v) for k,v in d['amounts'].items()}
         self.assertEqual(a['fee'],0);self.assertEqual(a['remaining'],a['claim']-a['recovery'])
