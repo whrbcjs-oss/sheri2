@@ -8,7 +8,7 @@ import shutil
 import sys
 
 ROOT=Path(__file__).resolve().parent
-FILES=['table_layout.py','joint_amounts.py','joint_allocation.py','joint_workflow.py','joint_app.py','joint_store.py','joint_report.py','joint_import.py','multiuser_app.py','collaboration.py','monthly_app.py','monthly_store.py',
+FILES=['survey_app.py','survey_store.py','survey_report.py','assets/bok_nonmanufacturing_blank.png','table_layout.py','joint_amounts.py','joint_allocation.py','joint_workflow.py','joint_app.py','joint_store.py','joint_report.py','joint_import.py','multiuser_app.py','collaboration.py','monthly_app.py','monthly_store.py',
        'monthly_report_preview.py','monthly_preview_template.html','monthly_theme.css','monthly_ledger.py','requirements.lock',
        'requirements.txt','repair_dependencies.bat']
 
@@ -31,12 +31,15 @@ def update(target):
     for name in FILES:
         path=target/name
         manifest[name]=hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else None
-        if path.exists():shutil.copy2(path,backup/name)
+        if path.exists():
+            (backup/name).parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(path,backup/name)
     (backup/'manifest.json').write_text(json.dumps(manifest,indent=2),encoding='utf-8')
     installed=[]
     try:
         for name in FILES:
             path=target/name
+            path.parent.mkdir(parents=True,exist_ok=True)
             tmp=target/(name+'.update-'+secrets.token_hex(4))
             try:
                 tmp.write_bytes((ROOT/name).read_bytes())

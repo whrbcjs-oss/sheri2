@@ -113,7 +113,7 @@ def user_management():
 
 def history_panel(user):
     st.title('변경 이력')
-    files = sorted(list(shared.DATA.glob('finance_*.db')) + list(shared.DATA.glob('lb_monthly_*.db')) + list(shared.DATA.glob('joint_venture.db')))
+    files = sorted(list(shared.DATA.glob('finance_*.db')) + list(shared.DATA.glob('lb_monthly_*.db')) + list(shared.DATA.glob('joint_venture.db')) + list(shared.DATA.glob('business_survey.db')))
     if files:
         path = st.selectbox('회계연도 DB', files, format_func=lambda p: p.stem)
         with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as c:
@@ -171,7 +171,7 @@ try:
         elif workspace == '변경 이력':
             history_panel(user)
         else:
-            program=st.radio('프로그램 선택',['자체결산 보고','엘비데크 월별보고','공동도급 관리대장'],key='main_system',horizontal=True,label_visibility='collapsed')
+            program=st.radio('프로그램 선택',['자체결산 보고','엘비데크 월별보고','공동도급 관리대장','한국은행 기업경기조사'],key='main_system',horizontal=True,label_visibility='collapsed')
             if st.session_state.get('_conflict'):
                 st.error(st.session_state['_conflict'])
                 st.info('저장되지 않은 입력을 복사해 보관한 뒤 왼쪽의 최신 자료 새로고침을 누르세요.')
@@ -186,7 +186,10 @@ try:
                 scope = {'__file__': str(code), '__name__': '__finance_app__',
                          'MULTIUSER_ENTRY': True, 'current_user': user,
                          'require_admin': require_admin, 'backup_panel': backup_panel}
-                if program=='공동도급 관리대장':
+                if program=='한국은행 기업경기조사':
+                    from survey_app import render as render_survey
+                    render_survey(user)
+                elif program=='공동도급 관리대장':
                     from joint_app import render as render_joint
                     render_joint(user)
                 elif program=='엘비데크 월별보고':
