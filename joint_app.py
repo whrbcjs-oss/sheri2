@@ -18,7 +18,7 @@ from joint_amounts import money_input,frame as amount_frame,show as amount_table
 from joint_report import render as report_html,money,period_label
 from joint_import import read as import_rows,LABELS
 
-VERSION='2026.11.02.2'
+VERSION='2026.11.02.6'
 
 def saved():
     st.session_state['_jv_success']='저장했습니다.';st.rerun()
@@ -401,6 +401,64 @@ def archive_page(c,p):
         if st.button('공동도급 백업 복원 실행',disabled=not(up and confirm)):
             db.restore(c,up.getvalue(),st.session_state['_auth_token']);st.session_state.pop('_snapshots',None);saved()
 
+CONTEXT_CSS = """
+<style>
+#root .st-key-jv_context_header {
+    background: #effbf5; border: 1px solid #8dd6b2;
+    border-left: 7px solid #009f57; border-radius: 10px;
+    padding: 20px 22px; margin: 8px 0 24px;
+    box-shadow: 0 3px 12px rgba(0, 120, 65, .08);
+}
+#root .st-key-jv_context_header .jv-context-title {
+    display: flex; align-items: center; gap: 12px; margin-bottom: 10px;
+    color: #134e35; font-size: 19px; font-weight: 800;
+}
+#root .st-key-jv_context_header .jv-context-mode {
+    background: #009f57; color: white; padding: 4px 10px;
+    border-radius: 6px; font-size: 14px;
+}
+#root .st-key-jv_context_header [data-testid="stWidgetLabel"] p {
+    color: #145b3e !important; font-size: 17px !important; font-weight: 750;
+}
+#root .st-key-jv_context_header [data-baseweb="select"] > div {
+    background: #fff; border-color: #8fc8ac; min-height: 46px;
+}
+#root .st-key-jv_context_header [data-testid="stCaptionContainer"] p {
+    color: #315f49 !important;
+}
+</style>
+"""
+
+
+def project_context(c, nonlead):
+    """Highlight the existing project/member controls without changing selection rules."""
+    projects = [x for x in db.projects(c) if db.is_nonlead(c, x['id']) == nonlead]
+    if not projects:
+        return None, [], None
+    mode = '당사비주관공사' if nonlead else '당사주관공사'
+    st.markdown(CONTEXT_CSS, unsafe_allow_html=True)
+    with st.container(border=True, key='jv_context_header'):
+        st.markdown('<div class="jv-context-title">현재 작업 공사 · 회원사 <span class="jv-context-mode">' + mode + '</span></div>', unsafe_allow_html=True)
+        columns = st.columns([2, 2, 1])
+        project_ids = [x['id'] for x in projects]
+        if st.session_state.get('jv_project') not in project_ids:
+            st.session_state['jv_project'] = project_ids[0]
+        project_id = columns[0].selectbox('공동도급 프로젝트', project_ids,
+            format_func=lambda i: next(x['name'] for x in projects if x['id'] == i), key='jv_project')
+        members = db.members(c, project_id)
+        owner = next(x['owner_id'] for x in projects if x['id'] == project_id)
+        member_ids = [x['id'] for x in members if not nonlead or x['company_id'] == owner]
+        if st.session_state.get('jv_member') not in member_ids:
+            st.session_state['jv_member'] = member_ids[0] if member_ids else None
+        selected = columns[1].selectbox('대상 회원사 (프로젝트 등록 회사)', member_ids,
+            format_func=lambda i: next(x['name'] for x in members if x['id'] == i), key='jv_member')
+        member = next((x for x in members if x['id'] == selected), None)
+        if member:
+            columns[2].markdown('**지분 ' + member['share'] + '%**')
+            columns[2].caption('관리비 ' + (member['fee_rate'] + '%' if member['fee_enabled'] else '미적용'))
+    return project_id, members, member
+
+
 def render(user):
     st.caption('공동도급 관리대장 · 버전 '+VERSION)
     c=db.connect()
@@ -415,16 +473,7 @@ def render(user):
         investment_section=st.radio('당사 투입비 하위 메뉴',['원장 엑셀 등록','원가 수기입력','공문 작성'],key='investment_section') if nonlead and page=='당사 투입비' else None
     try:
         if '_jv_success' in st.session_state:st.success(st.session_state.pop('_jv_success'))
-        ps=[x for x in db.projects(c) if nl.is_nonlead(c,x['id'])==nonlead];p=None;m=None
-        if ps:
-            cols=st.columns([2,2,1])
-            if st.session_state.get('jv_project') not in [x['id'] for x in ps]:st.session_state['jv_project']=ps[0]['id']
-            p=cols[0].selectbox('공동도급 프로젝트',[x['id'] for x in ps],format_func=lambda id:next(x['name'] for x in ps if x['id']==id),key='jv_project')
-            ms=db.members(c,p);options=[x['id'] for x in ms if not nonlead or x['company_id']==next(v for v in ps if v['id']==p)['owner_id']]
-            if st.session_state.get('jv_member') not in options:st.session_state['jv_member']=options[0] if options else None
-            selected=cols[1].selectbox('대상 회원사 (프로젝트 등록 회사)',options,format_func=lambda id:next(x['name'] for x in ms if x['id']==id),key='jv_member')
-            m=next((x for x in ms if x['id']==selected),None)
-            if m:cols[2].caption('지분 '+m['share']+'% · 관리비 '+(m['fee_rate']+'%' if m['fee_enabled'] else '미적용'))
+        p,ms,m=project_context(c,nonlead)
         if page=='법인·담당자':company_page(c);return
         if page=='프로젝트·회원사':project_page(c,p);return
         if p is None or not m:st.info('법인 등록 후 프로젝트·회원사를 등록하세요.');return
