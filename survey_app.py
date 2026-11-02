@@ -5,7 +5,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import survey_store as db
 from survey_report import html_preview,pdf
-VERSION='2026.11.02.2'
+VERSION='2026.11.02.3'
 
 def notice(message):st.session_state['_bs_notice']=message;st.rerun()
 def download_document(c,id):
