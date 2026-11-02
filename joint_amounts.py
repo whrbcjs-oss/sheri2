@@ -28,7 +28,7 @@ def frame(records,currency,row_sum=(),footer=True):
     if row_sum:
         for r in data:r['합계금액']=str(sum((num(r.get(k,0)) for k in row_sum),Decimal(0)))
         if '합계금액' in columns:columns.remove('합계금액')
-        columns.append('합계금액');currency=list(dict.fromkeys(currency+['합계금액']))
+        columns.insert(max(columns.index(k) for k in currency)+1,'합계금액');currency=list(dict.fromkeys(currency+['합계금액']))
     if footer:
         totals={k:'' for k in columns};first=next((k for k in columns if k not in currency),'구분');totals[first]='합계'
         for k in currency:totals[k]=str(sum((num(r.get(k,0)) for r in data),Decimal(0)))
@@ -43,5 +43,7 @@ def frame(records,currency,row_sum=(),footer=True):
 
 def show(records,currency,row_sum=(),footer=True):
     result=frame(records,currency,row_sum,footer)
-    st.dataframe(result,hide_index=True,use_container_width=True)
+    styled=result.style.set_properties(**{'text-align':'center'}).set_properties(subset=[k for k in list(currency)+['합계금액'] if k in result],**{'text-align':'right'})
+    if footer and len(result):styled=styled.set_properties(subset=pd.IndexSlice[[result.index[-1]],:],**{'font-weight':'bold','background-color':'#e8edf0','border-top':'2px solid #66737d'})
+    st.dataframe(styled,hide_index=True,use_container_width=True)
     return result

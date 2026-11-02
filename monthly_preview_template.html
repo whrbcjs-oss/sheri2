@@ -48,6 +48,7 @@ h1{font-size:32px;letter-spacing:-1px;margin:0 0 10px}h1 small{font-size:26px;ma
 #reporttable .final td.negative{color:#a93434!important}
 @media print{.pagehead{overflow:visible;display:block;margin-bottom:10px}.title-and-approvals{display:flex;flex-wrap:nowrap;min-width:0;gap:18px}.title-and-approvals>div:first-child{min-width:0}.report-approvals{margin:0;flex-wrap:nowrap}.pagehead>.actions{display:none!important}#reporttable .final td{background:#e4e7eb!important;color:#26313b!important}#reporttable .final td.negative{color:#a93434!important}}
 @media screen and (max-width:1150px){.title-and-approvals{gap:16px}.title-and-approvals h1{font-size:26px}.title-and-approvals h1 small{font-size:23px}.report-approvals .approval-table{width:170px}}
+th{text-align:center!important}
 </style></head><body>
 <aside><div class="brand">LB DECK<small>데크·거더사업부 수지관리</small></div><div class="nav-head">MONTHLY REPORT</div><button class="nav-item active" id="nav-report" onclick="tab('report')"><span>▦</span>수입·지출 보고서</button><button class="nav-item" id="nav-analysis" onclick="tab('analysis')"><span>≡</span>자료 분석·검증</button><div class="side-note"><strong>보고서 화면 시안 · v1</strong><br>원본 엑셀 기준 / 읽기 전용<br>숫자를 누르면 집계 근거를 확인합니다.<br>회사 원본은 외부로 전송하지 않습니다.</div></aside>
 <main><div class="embedded-switch"><button class="control" onclick="tab('report')">보고서</button><button class="control" onclick="tab('analysis')">분석·검증</button></div><div class="topbar"><span>엘비데크 월별보고 &nbsp; / &nbsp; 통장 입출금 기준</span><span class="pill">공급가액 기준 · 부가세 제외</span></div>
@@ -156,3 +157,14 @@ document.getElementById('endMonth').innerHTML=D.months.map(m=>`<option value="${
 if(D.validation_mode==='ledger'){document.title='엘비데크 | 월별 통장 수입·지출 보고서';document.querySelector('.paneltitle small').textContent='월별 업로드한 원장을 집계한 부가세 제외 보고서';document.querySelector('.side-note').innerHTML='<strong>월별 원장 자동 집계</strong><br>원장·부가세·별도 조정 기준<br>숫자를 누르면 집계 근거를 확인합니다.';}
 render();analysis();document.addEventListener('keydown',e=>{if(e.key==='Escape')closeDrawer()});
 </script></body></html>
+
+<script>
+// Reapply semantic alignment after month filters and expandable details render.
+function alignReportCells(){document.querySelectorAll('table td').forEach(cell=>{
+ const value=cell.textContent.trim();
+ const numeric=/^[−△▲-]?\s*[\d,]+(?:\.\d+)?(?:%|원)?$/.test(value);
+ cell.style.setProperty('text-align',numeric?'right':'center','important');
+});}
+new MutationObserver(alignReportCells).observe(document.body,{childList:true,subtree:true});
+alignReportCells();
+</script>

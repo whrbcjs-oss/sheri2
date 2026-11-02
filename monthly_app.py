@@ -9,6 +9,8 @@ import sqlite3
 import zipfile
 
 import streamlit as st
+from table_layout import install as install_table_layout
+install_table_layout()
 import streamlit.components.v1 as components
 import collaboration as shared
 import monthly_store as store

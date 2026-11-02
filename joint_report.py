@@ -11,6 +11,7 @@ def amount(v):
     n=num(v)
     return '<span class="negative">'+esc(money(n))+'</span>' if n<0 else (esc(money(n)) if n else '−')
 def td(value='',numeric=False,**attrs):
+    attrs['class']=(attrs.get('class','')+' '+('number' if numeric else 'text')).strip()
     attributes=''.join(' '+k+'="'+esc(v)+'"' for k,v in attrs.items())
     return '<td'+attributes+'>'+(amount(value) if numeric else esc(value))+'</td>'
 def short_date(value):
@@ -19,7 +20,7 @@ def short_date(value):
 
 def numeric_cells(values):return ''.join(td(v,True) for v in values)
 def table(headers,records):
-    return '<table><thead><tr>'+''.join('<th>'+esc(x)+'</th>' for x in headers)+'</tr></thead><tbody>'+''.join('<tr>'+''.join(td(x) for x in row)+'</tr>' for row in records)+'</tbody></table>'
+    return '<table><thead><tr>'+''.join('<th>'+esc(x)+'</th>' for x in headers)+'</tr></thead><tbody>'+''.join('<tr>'+''.join(td(x,False,**{'class':'number' if any(t in headers[i] for t in ['공급가액','VAT','계산서','영수증','합계']) else 'text'}) for i,x in enumerate(row))+'</tr>' for row in records)+'</tbody></table>'
 
 
 def period_label(start,end):
@@ -87,10 +88,10 @@ def settlement_body(d,meta,number,issued):
     body+='</tbody></table></div><p class="sheet-bottom">보험료·제외항목은 회원사분 입력액입니다. 관리비는 기성별 원 미만 버림을 적용합니다.</p></section>'
     if d.get('claim_only'):
         body+='<section class="support-sheet"><h2>■ 하도급 청구내역 ['+esc(m['name'])+']</h2><div class="sheet-scroll"><table id="subcontract-grid"><thead><tr>'
-        body+=''.join('<th>'+x+'</th>' for x in ['청구일','업체명','공급가액','VAT','공종명','지급방식','비고','합계금액'])+'</tr></thead><tbody>'
+        body+=''.join('<th>'+x+'</th>' for x in ['청구일','업체명','공급가액','VAT','합계금액','공종명','지급방식','비고'])+'</tr></thead><tbody>'
         for e in subs:
-            v=e['data'];body+='<tr>'+td(short_date(e['entry_date']))+td(v.get('vendor',''))+numeric_cells([v['supply'],v['vat']])+td(v.get('work_type',''))+td(v.get('method',''))+td(v.get('note',''))+numeric_cells([num(v['supply'])+num(v['vat'])])+'</tr>'
-        body+='<tr class="grand-total">'+td('합 계',colspan='2')+numeric_cells([sub,subvat])+td('',colspan='3')+numeric_cells([sub+subvat])+'</tr></tbody></table></div></section>'
+            v=e['data'];body+='<tr>'+td(short_date(e['entry_date']))+td(v.get('vendor',''))+numeric_cells([v['supply'],v['vat'],num(v['supply'])+num(v['vat'])])+td(v.get('work_type',''))+td(v.get('method',''))+td(v.get('note',''))+'</tr>'
+        body+='<tr class="grand-total">'+td('합 계',colspan='2')+numeric_cells([sub,subvat,sub+subvat])+td('',colspan='3')+'</tr></tbody></table></div></section>'
     else:
         # Supporting sheet 3 mirrors the claim/payment columns of the original.
         body+='<section class="support-sheet"><h2>■ 하도급 청구 및 지급현황 ['+esc(m['name'])+']</h2><div class="sheet-scroll"><table id="subcontract-grid"><thead><tr>'
@@ -183,3 +184,5 @@ def monthly_package(package,member_id,meta):
             if original.get('digest') and hashlib.sha256(blob).hexdigest()!=original['digest']:raise ValueError('보관된 원본 파일의 무결성이 맞지 않습니다.')
             z.writestr('업로드원본/원본_'+str(original['id'])+'.xlsx',blob)
     return stream.getvalue(),ledger_html,alloc_html
+
+CSS += "td.text, .support-sheet td.text:first-child, #letter-amounts td.text:first-child{text-align:center}td.number{text-align:right}.grand-total{background:#e8edf0}.grand-total td{border-top:2px solid #66737d}"

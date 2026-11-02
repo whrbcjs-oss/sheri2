@@ -7,6 +7,8 @@ from zipfile import BadZipFile
 import pandas as pd
 import openpyxl
 import streamlit as st
+from table_layout import install as install_table_layout
+install_table_layout()
 import streamlit.components.v1 as components
 import collaboration as shared
 import joint_store as db
@@ -16,7 +18,7 @@ from joint_amounts import money_input,frame as amount_frame,show as amount_table
 from joint_report import render as report_html,money,period_label
 from joint_import import read as import_rows,LABELS
 
-VERSION='2026.11.01.1'
+VERSION='2026.11.02.1'
 
 def saved():
     st.session_state['_jv_success']='저장했습니다.';st.rerun()
@@ -175,14 +177,21 @@ def pick_table(title,records,selected,key,used=None):
         total=(db.num(r.get('관리비',0))+db.num(r.get('산재보험',0))+db.num(r.get('고용보험',0))) if '관리비' in r else db.num(r.get('공급가액',0))+db.num(r.get('VAT',0))-db.num(r.get('회원사투입 차감',0))
         initial.append({'선택':r['id'] in selected,**r,'다른 정산 사용':used.get(r['id'],''),'합계금액':str(total)})
     currencies+=['합계금액'];formatted_frame=amount_frame(initial,currencies,footer=False)
+    columns=list(formatted_frame);columns.remove('합계금액');columns.insert(max(columns.index(k) for k in currencies if k!='합계금액')+1,'합계금액');formatted_frame=formatted_frame[columns]
+    footer={k:'' for k in columns};footer['선택']=False;footer['id']=0;footer[next(k for k in columns if k not in currencies and k not in ['선택','id'])]='목록 합계'
+    for k in currencies:footer[k]=formatted(sum((db.num(x.get(k,0)) for x in initial),db.num(0)))
+    formatted_frame=pd.concat([formatted_frame,pd.DataFrame([footer])],ignore_index=True)
     import hashlib
     fingerprint=hashlib.sha256(json.dumps(initial,ensure_ascii=False,sort_keys=True).encode()).hexdigest()[:12]
-    frame=st.data_editor(formatted_frame,hide_index=True,use_container_width=True,disabled=[x for x in initial[0] if x!='선택'],column_config={'id':st.column_config.NumberColumn('내역번호')},key=key+'_'+fingerprint)
-    ids=[int(x['id']) for x in frame.to_dict('records') if x['선택']]
-    summaries=[]
-    for label,subset in [('목록 합계',initial),('선택 합계',[x for x in initial if x['id'] in ids])]:
-        summaries.append({'구분':label,**{k:str(sum((db.num(x.get(k,0)) for x in subset),db.num(0))) for k in currencies}})
-    amount_table(summaries,currencies,footer=False)
+    widget_key=key+'_'+fingerprint
+    edits=st.session_state.get(widget_key,{}).get('edited_rows',{})
+    current_ids=[r['id'] for i,r in enumerate(initial) if edits.get(i,edits.get(str(i),{})).get('선택',r['선택'])]
+    selected_total={k:'' for k in columns};selected_total['선택']=False;selected_total['id']=0
+    selected_total[next(k for k in columns if k not in currencies and k not in ['선택','id'])]='선택 합계'
+    for k in currencies:selected_total[k]=formatted(sum((db.num(x.get(k,0)) for x in initial if x['id'] in current_ids),db.num(0)))
+    formatted_frame=pd.concat([formatted_frame,pd.DataFrame([selected_total])],ignore_index=True)
+    frame=st.data_editor(formatted_frame,hide_index=True,use_container_width=True,disabled=[x for x in initial[0] if x!='선택'],column_config={'id':st.column_config.NumberColumn('내역번호')},key=widget_key)
+    ids=[int(x['id']) for x in frame.to_dict('records') if x['선택'] and int(x['id'])!=0]
     return ids
 
 def entry_form(c,p,m,kind,default_month=None):

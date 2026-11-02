@@ -137,23 +137,23 @@ def matrix_data(project,members,raw,allocations,prior=(),stored=(),prior_known=T
 def render_matrix(data,month,printable=True):
     from joint_report import money
     esc=lambda s:escape(str(s));ms=data['members']
-    def cell(value):return '<td>'+esc(money(value))+'</td>'
+    def cell(value):return '<td class="number">'+esc(money(value))+'</td>'
     h='<h1>원 가 배 분 내 역 서</h1><div class="heading"><span>공사명 : '+esc(data['project']['name'])+'</span><span>배분연월 : '+esc(month)+' · 단위: 원</span></div>'
-    h+='<div class="scroll"><table id="allocation-matrix"><thead><tr><th rowspan="3">과 목</th><th colspan="7">공 사 원 가 (공급가액 + 부가세)</th>'+''.join('<th colspan="5">'+esc(m['name'])+'</th>' for m in ms)+'<th rowspan="3">비고·검산</th><th rowspan="3">합계금액<br>(당월+VAT)</th></tr><tr><th rowspan="2">전월까지</th><th colspan="4">당월 원가</th><th rowspan="2">VAT</th><th rowspan="2">누계</th>'+''.join('<th colspan="5">'+esc(m['share'])+'%</th>' for m in ms)+'</tr><tr>'
+    h+='<div class="scroll"><table id="allocation-matrix"><thead><tr><th rowspan="3">과 목</th><th colspan="8">공 사 원 가 (공급가액 + 부가세)</th>'+''.join('<th colspan="5">'+esc(m['name'])+'</th>' for m in ms)+'<th rowspan="3">비고·검산</th></tr><tr><th rowspan="2">전월까지</th><th colspan="4">당월 원가</th><th rowspan="2">VAT</th><th rowspan="2">합계금액<br>(당월+VAT)</th><th rowspan="2">누계</th>'+''.join('<th colspan="5">'+esc(m['share'])+'%</th>' for m in ms)+'</tr><tr>'
     h+=''.join('<th>'+x+'</th>' for x in ['세금계산서','계산서','기타증빙','공급가액']+['세금계산서','계산서','기타','공급가액 계','VAT']*len(ms))+'</tr></thead><tbody>'
     for line in data['lines']:
         if 'section' in line:h+='<tr class="section"><td colspan="'+str(10+5*len(ms))+'">'+esc(line['section'])+'</td></tr>';continue
         cur=line['current'];supply=sum((cur[k] for k in BUCKETS[:3]),Decimal(0));gross=supply+cur['vat']
         h+='<tr class="'+('total' if line.get('total') else 'subtotal' if line.get('subtotal') else '')+'"><td>'+esc(line['label'])+'</td>'
-        h+=(cell(line['previous']) if data['prior_known'] else '<td>미기록</td>')+''.join(cell(cur[k]) for k in BUCKETS[:3])+cell(supply)+cell(cur['vat'])+(cell(line['previous']+gross) if data['prior_known'] else '<td>미기록</td>')
+        h+=(cell(line['previous']) if data['prior_known'] else '<td>미기록</td>')+''.join(cell(cur[k]) for k in BUCKETS[:3])+cell(supply)+cell(cur['vat'])+cell(gross)+(cell(line['previous']+gross) if data['prior_known'] else '<td>미기록</td>')
         for m in ms:
             part=line['companies'][m['id']]
             h+=(''.join('<td>확인 필요</td>' for _ in range(3)) if line['unknown'] else ''.join(cell(part[k]) for k in BUCKETS[:3]))+cell(part['base'])+cell(part['vat'])
         valid=sum((line['companies'][m['id']]['base'] for m in ms),Decimal(0))==supply and sum((line['companies'][m['id']]['vat'] for m in ms),Decimal(0))==cur['vat']
-        h+='<td>'+('확인 필요' if line['unknown'] else '정상' if valid else '미배분·확인')+'</td>'+cell(gross)+'</tr>'
+        h+='<td>'+('확인 필요' if line['unknown'] else '정상' if valid else '미배분·확인')+'</td></tr>'
     h+='</tbody></table></div><p>분류 확인 계정은 전체 공급가액에 포함하며 공사원가 계에는 중복 포함하지 않습니다.</p><p>합계금액은 당월 공급가액과 VAT의 합계입니다. 회사별 배분액을 다시 더하지 않습니다.</p>'
     if data.get('legacy'):h+='<p>기존 배분액을 보존한 자료입니다. 새 계산 기준은 미마감 월에서 정산 연결 확인 후 명시적으로 재배분할 수 있습니다.</p>'
     if data['unknown']:h+='<p>기존 혼합 증빙 배분은 금액을 보존했습니다. 증빙별 배분을 확인하거나 미마감 월에서 명시적으로 재배분하세요.</p>'
     button='<button onclick="window.print()">인쇄 / PDF 저장</button>' if printable else '<button disabled>월 마감 후 출력</button>'
-    css='''*{box-sizing:border-box}body{font:14px/1.4 "Malgun Gothic",sans-serif;color:#111;margin:20px}h1{text-align:center;font-size:26px;letter-spacing:4px}.heading{display:flex;justify-content:space-between;margin:12px 0}.scroll{overflow:auto}table{border-collapse:collapse;min-width:2000px;width:100%;font-variant-numeric:tabular-nums}th,td{border:1px solid #333;padding:5px;text-align:right;white-space:nowrap}th{text-align:center;background:#f7f8f8}td:first-child{text-align:left}.section td{font-weight:bold;background:#eef4f6}.subtotal{background:#f1f2f3;font-weight:700}.total{background:#e0e5e9;font-weight:700}p{font-size:12px}button{padding:10px 16px;background:#009f57;color:white;border:0;margin-bottom:10px}@page{size:A3 landscape;margin:10mm}@media print{body{margin:0;font-size:9pt}button{display:none}.scroll{overflow:visible}table{min-width:0;font-size:8pt}th,td{padding:1.5px;line-height:1.2}tr{break-inside:avoid}h1{font-size:18pt;margin:8px 0}.heading{margin:6px 0}.section td,.subtotal,.total{print-color-adjust:exact}}'''
+    css='''*{box-sizing:border-box}body{font:14px/1.4 "Malgun Gothic",sans-serif;color:#111;margin:20px}h1{text-align:center;font-size:26px;letter-spacing:4px}.heading{display:flex;justify-content:space-between;margin:12px 0}.scroll{overflow:auto}table{border-collapse:collapse;min-width:2000px;width:100%;font-variant-numeric:tabular-nums}th,td{border:1px solid #333;padding:5px;text-align:right;white-space:nowrap}th{text-align:center;background:#f7f8f8}td{text-align:center}td.number{text-align:right}.section td{font-weight:bold;background:#eef4f6}.subtotal{background:#f1f2f3;font-weight:700}.total{background:#e0e5e9;font-weight:700}p{font-size:12px}button{padding:10px 16px;background:#009f57;color:white;border:0;margin-bottom:10px}@page{size:A3 landscape;margin:10mm}@media print{body{margin:0;font-size:9pt}button{display:none}.scroll{overflow:visible}table{min-width:0;font-size:8pt}th,td{padding:1.5px;line-height:1.2}tr{break-inside:avoid}h1{font-size:18pt;margin:8px 0}.heading{margin:6px 0}.section td,.subtotal,.total{print-color-adjust:exact}}'''
     return '<!doctype html><html lang="ko"><meta charset="utf-8"><title>원가배분내역서</title><style>'+css+'</style><body>'+button+h+'</body></html>'

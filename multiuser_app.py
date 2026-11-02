@@ -2,6 +2,8 @@
 from pathlib import Path
 import sqlite3
 import streamlit as st
+from table_layout import install as install_table_layout
+install_table_layout()
 import collaboration as shared
 
 st.set_page_config(page_title='관계사 통합 수지관리', page_icon='📊', layout='wide')
