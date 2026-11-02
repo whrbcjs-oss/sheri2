@@ -18,7 +18,7 @@ from joint_amounts import money_input,frame as amount_frame,show as amount_table
 from joint_report import render as report_html,money,period_label
 from joint_import import read as import_rows,LABELS
 
-VERSION='2026.11.02.6'
+VERSION='2026.11.02.7'
 
 def saved():
     st.session_state['_jv_success']='저장했습니다.';st.rerun()
@@ -86,11 +86,11 @@ def ledger_page(c,p,ms,nonlead=False,subsection=None):
     if nonlead:
         owner=next(x for x in db.projects(c) if x['id']==p)['owner_id'];ms=[m for m in ms if m['company_id']==owner]
     if nonlead:
-        from contextlib import nullcontext
-        tab1,tab2,tab3=nullcontext(),nullcontext(),st.expander('원장 조회',expanded=True)
+        tab2,tab1=st.tabs(['원장 엑셀 등록','원가 수기입력'])
+        tab3=None
     else:tab1,tab2,tab3=st.tabs(['회원사 원가 수기입력','엑셀 업로드','원장 조회'])
     with tab1:
-        if not nonlead or subsection=='원가 수기입력':
+        if not nonlead or subsection in (None,'원가 수기입력'):
             with st.container(border=True):
                 cols=st.columns(3)
                 with cols[0]:
@@ -104,8 +104,9 @@ def ledger_page(c,p,ms,nonlead=False,subsection=None):
                     st.info('합계금액: '+money(sum((db.num(rec[k]) for k in ['tax_supply','vat','invoice','receipt']),db.num(0)))+'원')
                 if st.button('원가 저장',type='primary'):db.add_ledger(c,p,who,[rec]);saved()
     with tab2:
-        if not nonlead or subsection=='원장 엑셀 등록':
-            st.info('아마란스 실제 양식 확인 전에는 열을 직접 지정합니다. 전표번호와 전표행 식별값으로 중복을 차단하며, 중복이 있으면 파일 전체를 저장하지 않습니다.')
+        if not nonlead or subsection in (None,'원장 엑셀 등록'):
+            if nonlead:st.caption('엑셀 파일을 선택한 뒤 시트와 열을 확인해 등록하세요.')
+            else:st.info('아마란스 실제 양식 확인 전에는 열을 직접 지정합니다. 전표번호와 전표행 식별값으로 중복을 차단하며, 중복이 있으면 파일 전체를 저장하지 않습니다.')
             wb=openpyxl.Workbook();ws=wb.active;ws.title='원장';ws.append(list(LABELS.values()))
             stream=BytesIO();wb.save(stream)
             st.download_button('입력용 빈 엑셀 양식',stream.getvalue(),file_name='공동도급_원장입력양식.xlsx')
@@ -130,7 +131,8 @@ def ledger_page(c,p,ms,nonlead=False,subsection=None):
                     if st.button('검증 후 원장 전체 저장',type='primary'):
                         records=import_rows(blob,sheet,header,mapping,int(last) or None);db.add_ledger(c,p,who,records,blob,up.name);saved()
                 finally:book.close()
-    with tab3:
+    with (st.container(border=True) if nonlead else tab3):
+        if nonlead:st.subheader('등록 원장 조회')
         frame=pd.DataFrame([r for r in db.ledger(c,p) if not nonlead or r['company_id']==owner]);labels={'id':'원장번호','company':'원가투입 회사','posting_date':'기표일자','allocation_month':'배분연월','account':'계정과목','vendor':'거래처명','description':'적요','tax_supply':'세금계산서 공급가액','vat':'VAT','invoice':'계산서 금액','receipt':'기타영수증 금액','note':'비고'}
         frame=frame[[k for k in labels if k in frame.columns]].rename(columns=labels);frame=amount_table(frame,['세금계산서 공급가액','VAT','계산서 금액','기타영수증 금액'],['세금계산서 공급가액','VAT','계산서 금액','기타영수증 금액'])
         st.download_button('원장 CSV 내려받기',safe_csv(frame),file_name='공동도급_원장.csv')
@@ -426,6 +428,61 @@ CONTEXT_CSS = """
 #root .st-key-jv_context_header [data-testid="stCaptionContainer"] p {
     color: #315f49 !important;
 }
+
+#root .st-key-jv_context_header [data-testid="stMetric"] {
+    padding: 14px 16px; border: 1px solid #cfe5d9; background: #fff;
+    border-radius: 8px; min-height: 112px;
+}
+#root .st-key-jv_context_header [data-testid="stMetricValue"] {
+    color: #087a4b !important; font-size: 44px !important; font-weight: 800 !important;
+}
+#root .st-key-jv_context_header [data-testid="stMetricLabel"] p {
+    color: #4b6374 !important; font-size: 15px !important; font-weight: 700;
+}
+#root .st-key-jv_context_header [data-baseweb="select"] > div {background: #fff !important;}
+#root [data-testid="stSidebar"]:has(.st-key-jv_navigation) {background: #f6faf8 !important;}
+#root [data-testid="stSidebarContent"]:has(.st-key-jv_navigation)::before {display: none;}
+#root .jv-sidebar-brand {
+    background: #075b42; color: #fff; font-size: 24px; font-weight: 800;
+    padding: 22px 16px; margin: 0 -16px 20px;
+}
+#root .st-key-jv_navigation [data-testid="stButton"] button {
+    width: 100%; min-height: 50px; border: 0; border-radius: 4px;
+    justify-content: flex-start; padding: 12px 14px; gap: 12px;
+    background: transparent; color: #263c51; box-shadow: none;
+    text-align: left; border-left: 6px solid transparent;
+}
+#root .st-key-jv_navigation [data-testid="stButton"] button p {
+    font-size: 16px !important; font-weight: 600; color: #263c51 !important;
+}
+#root .st-key-jv_navigation [data-testid="stButton"] button:hover {
+    background: #eaf5ef; color: #087a4b;
+}
+#root .st-key-jv_navigation [data-testid="stButton"] button[kind="primary"] {
+    background: #dff7ec !important; border-left: 6px solid #009f57 !important;
+    color: #087a4b !important;
+}
+#root .st-key-jv_navigation [data-testid="stButton"] button[kind="primary"] p {
+    color: #087a4b !important; font-weight: 800;
+}
+
+#root .st-key-jv_context_header [data-testid="stMetricValue"] p {
+    color: #087a4b !important; font-size: 44px !important; font-weight: 800 !important;
+}
+#root .st-key-jv_navigation [data-testid="stButton"] button > div,
+#root .st-key-jv_navigation [data-testid="stButton"] button [data-has-shortcut] {
+    width: 100%; justify-content: flex-start !important; text-align: left;
+}
+#root .st-key-jv_navigation [data-testid="stButton"] button p {
+    font-size: 15px !important; text-align: left; white-space: nowrap;
+}
+#root .st-key-jv_navigation [data-testid="stIconMaterial"] {font-size: 22px;}
+#root .st-key-jv_investment_body [data-baseweb="tab-highlight"] {background-color: #009f57 !important; height: 3px;}
+#root .st-key-jv_investment_body [role="tab"][aria-selected="true"] p {color: #008d4b !important; font-weight: 800;}
+#root .st-key-jv_investment_body [role="tab"] p {font-size: 17px !important;}
+@media(min-width:1000px) {
+    #root [data-testid="stSidebar"]:has(.st-key-jv_navigation) {min-width: 300px; width: 300px;}
+}
 </style>
 """
 
@@ -436,10 +493,9 @@ def project_context(c, nonlead):
     if not projects:
         return None, [], None
     mode = '당사비주관공사' if nonlead else '당사주관공사'
-    st.markdown(CONTEXT_CSS, unsafe_allow_html=True)
     with st.container(border=True, key='jv_context_header'):
         st.markdown('<div class="jv-context-title">현재 작업 공사 · 회원사 <span class="jv-context-mode">' + mode + '</span></div>', unsafe_allow_html=True)
-        columns = st.columns([2, 2, 1])
+        columns = st.columns([2.4, 1.4, .8, .8], vertical_alignment="center")
         project_ids = [x['id'] for x in projects]
         if st.session_state.get('jv_project') not in project_ids:
             st.session_state['jv_project'] = project_ids[0]
@@ -454,23 +510,59 @@ def project_context(c, nonlead):
             format_func=lambda i: next(x['name'] for x in members if x['id'] == i), key='jv_member')
         member = next((x for x in members if x['id'] == selected), None)
         if member:
-            columns[2].markdown('**지분 ' + member['share'] + '%**')
-            columns[2].caption('관리비 ' + (member['fee_rate'] + '%' if member['fee_enabled'] else '미적용'))
+            columns[2].metric('지분율', member['share'] + '%')
+            columns[3].metric('관리비율', member['fee_rate'] + '%' if member['fee_enabled'] else '미적용')
     return project_id, members, member
+
+
+NAV_ICONS = {
+    '법인·담당자': ':material/domain:',
+    '프로젝트·회원사': ':material/groups:',
+    '당사 투입비': ':material/calculate:',
+    '공문 작성': ':material/article:',
+    '원가배분·기성·하도급·지급': ':material/bar_chart:',
+    '원가정산서': ':material/description:',
+    '발행본·백업': ':material/inventory_2:',
+    '원장 등록': ':material/calculate:',
+    '원가배분내역서': ':material/table_chart:',
+    '기성·하도급·회수': ':material/bar_chart:',
+    '월 마감·보고서 출력': ':material/print:',
+}
+
+
+def navigate_joint_page(page):
+    st.session_state['jv_page'] = page
+
+
+def sidebar_navigation(nonlead):
+    pages = (['법인·담당자','프로젝트·회원사','당사 투입비','공문 작성','원가배분·기성·하도급·지급','원가정산서','발행본·백업']
+        if nonlead else ['법인·담당자','프로젝트·회원사','원장 등록','원가배분내역서','기성·하도급·회수','원가정산서','공문 작성','월 마감·보고서 출력','발행본·백업'])
+    # Preserve the destination of a previously selected investment-letter submenu.
+    if nonlead and st.session_state.get('jv_page') == '당사 투입비' and st.session_state.get('investment_section') == '공문 작성':
+        st.session_state['jv_page'] = '공문 작성'
+    st.session_state.pop('investment_section', None)
+    if st.session_state.get('jv_page') not in pages:
+        st.session_state['jv_page'] = pages[0]
+    selected = st.session_state['jv_page']
+    st.markdown('**공동도급 업무**')
+    with st.container(key='jv_navigation'):
+        for page in pages:
+            st.button(page, icon=NAV_ICONS[page], key='jv_nav_' + page,
+                type='primary' if page == selected else 'secondary', use_container_width=True,
+                on_click=navigate_joint_page, args=(page,))
+    return selected
 
 
 def render(user):
     st.caption('공동도급 관리대장 · 버전 '+VERSION)
     c=db.connect()
     import joint_nonlead as nl
+    st.markdown(CONTEXT_CSS, unsafe_allow_html=True)
     with st.sidebar:
-        st.subheader('공동도급 관리대장')
+        st.markdown('<div class="jv-sidebar-brand">공동도급 관리대장</div>', unsafe_allow_html=True)
         mode=st.radio('공사 구분',['당사주관공사','당사비주관공사'],key='jv_mode')
         nonlead=mode=='당사비주관공사'
-        pages=['법인·담당자','프로젝트·회원사','당사 투입비','원가배분·기성·하도급·지급','원가정산서','발행본·백업'] if nonlead else ['법인·담당자','프로젝트·회원사','원장 등록','원가배분내역서','기성·하도급·회수','원가정산서','공문 작성','월 마감·보고서 출력','발행본·백업']
-        if st.session_state.get('jv_page') not in pages:st.session_state['jv_page']=pages[0]
-        page=st.radio('공동도급 업무',pages,key='jv_page')
-        investment_section=st.radio('당사 투입비 하위 메뉴',['원장 엑셀 등록','원가 수기입력','공문 작성'],key='investment_section') if nonlead and page=='당사 투입비' else None
+        page=sidebar_navigation(nonlead)
     try:
         if '_jv_success' in st.session_state:st.success(st.session_state.pop('_jv_success'))
         p,ms,m=project_context(c,nonlead)
@@ -478,14 +570,15 @@ def render(user):
         if page=='프로젝트·회원사':project_page(c,p);return
         if p is None or not m:st.info('법인 등록 후 프로젝트·회원사를 등록하세요.');return
         if page=='당사 투입비':
-            if investment_section=='공문 작성':nl.investment_letter(c,p,ms)
-            else:ledger_page(c,p,ms,True,investment_section)
+            with st.container(key='jv_investment_body'):ledger_page(c,p,ms,True)
         elif page=='원가배분·기성·하도급·지급':nl.entry_page(c,p,m)
         elif page=='원장 등록':ledger_page(c,p,ms)
         elif page=='발행본·백업':archive_page(c,p)
         elif page=='기성·하도급·회수':entry_page(c,p,m)
         elif page=='원가정산서':settlement_page(c,p,m)
-        elif page=='공문 작성':monthly_reports(c,p,m,user,True)
+        elif page=='공문 작성':
+            if nonlead:nl.investment_letter(c,p,ms)
+            else:monthly_reports(c,p,m,user,True)
         elif page=='월 마감·보고서 출력':monthly_reports(c,p,m,user)
         elif page=='원가배분내역서':
             month=st.text_input('배분연월 (YYYY-MM)',date.today().strftime('%Y-%m'));db.period(month);allocation_page(c,p,month,month)

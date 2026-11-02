@@ -20,13 +20,14 @@ class ProjectHeaderTests(unittest.TestCase):
         member=next(x for x in at.selectbox if x.key=='jv_member')
         self.assertTrue(any('jv-context-title' in x.value for x in at.markdown))
         self.assertTrue(any('border-left: 7px solid #009f57' in x.value for x in at.markdown))
+        self.assertEqual([x.label for x in at.metric][:2],['지분율','관리비율'])
         return project,member
     def test_lead_context_preserves_selection_across_pages(self):
         h=self.h
         at=self.app();at.session_state['jv_project']=h.p;at.session_state['jv_member']=h.m;at.run()
         project,member=self.check_header(at);self.assertEqual(member.value,h.m)
         for page in ['기성·하도급·회수','원가정산서','원장 등록']:
-            next(x for x in at.radio if x.key=='jv_page').set_value(page);at.run()
+            next(x for x in at.button if x.key=='jv_nav_'+page).click();at.run()
             project,member=self.check_header(at);self.assertEqual(project.value,h.p);self.assertEqual(member.value,h.m)
     def test_nonlead_context_preserves_project_and_member_filter(self):
         h=self.h
@@ -37,5 +38,5 @@ class ProjectHeaderTests(unittest.TestCase):
         self.assertEqual(project.options,['비주관 공사']);self.assertEqual(member.options,['가상 당사'])
         self.assertEqual(member.value,owner);self.assertFalse(db.is_nonlead(h.c,h.p))
         for page in ['원가배분·기성·하도급·지급','원가정산서','당사 투입비']:
-            next(x for x in at.radio if x.key=='jv_page').set_value(page);at.run()
+            next(x for x in at.button if x.key=='jv_nav_'+page).click();at.run()
             project,member=self.check_header(at);self.assertEqual(project.value,nonlead);self.assertEqual(member.value,owner)
