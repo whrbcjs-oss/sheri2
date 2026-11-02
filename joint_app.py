@@ -18,7 +18,7 @@ from joint_amounts import money_input,frame as amount_frame,show as amount_table
 from joint_report import render as report_html,money,period_label
 from joint_import import read as import_rows,LABELS
 
-VERSION='2026.11.02.1'
+VERSION='2026.11.02.2'
 
 def saved():
     st.session_state['_jv_success']='저장했습니다.';st.rerun()
@@ -56,12 +56,14 @@ def company_page(c):
     st.dataframe([{'법인코드':x['code'],'법인명':x['name'],'회사 구분':json.loads(x['info']).get('회사구분','미분류')} for x in visible],hide_index=True,use_container_width=True)
 
 def project_page(c,current=None):
+    import joint_nonlead as nl
     st.header('프로젝트·회원사 등록')
     cos=db.companies(c)
     if not cos:st.info('먼저 법인·담당자에서 당사와 참여 회사를 등록하세요.');return
     labels={x['id']:f"{x['name']} [{x['code']}] · {json.loads(x['info']).get('회사구분','미분류')}" for x in cos};reverse={v:k for k,v in labels.items()}
     ps=db.projects(c);selected=st.selectbox('프로젝트 등록·수정',[None]+[x['id'] for x in ps],index=([None]+[x['id'] for x in ps]).index(current) if current in [x['id'] for x in ps] else 0,format_func=lambda id:'새 프로젝트' if id is None else next(x['name'] for x in ps if x['id']==id))
     old=next((x for x in ps if x['id']==selected),{});ms=db.members(c,selected) if selected else []
+    nonlead=st.checkbox('당사비주관공사',value=nl.is_nonlead(c,selected) if selected else st.session_state.get('jv_mode')=='당사비주관공사',key='project_nonlead_'+str(selected))
     owner_options=[x['id'] for x in cos if json.loads(x['info']).get('회사구분','미분류')!='외부 회원사' or x['id']==old.get('owner_id')]
     if not owner_options:st.info('관리법인으로 사용할 당사 또는 관계사를 등록하세요.');return
     with st.container(border=True):
@@ -77,52 +79,59 @@ def project_page(c,current=None):
         frame=st.data_editor(pd.DataFrame(initial),num_rows='dynamic',hide_index=True,use_container_width=True,column_config={'법인':st.column_config.SelectboxColumn(options=list(reverse),required=True)})
         if st.button('프로젝트 저장',type='primary',key='save_project_'+str(selected)):
             entries=[dict(company_id=reverse[x['법인']],share=x['지분율(%)'],fee_enabled=x['관리비 적용'],fee_rate=x['관리비율(%)']) for x in frame.to_dict('records') if x.get('법인') in reverse]
-            db.project(c,name,owner,contract,supply,vat,start,end,entries,selected);saved()
+            db.project(c,name,owner,contract,supply,vat,start,end,entries,selected,nonlead=nonlead);saved()
 
-def ledger_page(c,p,ms):
-    st.header('원장 업로드·수기입력')
-    tab1,tab2,tab3=st.tabs(['회원사 원가 수기입력','엑셀 업로드','원장 조회'])
+def ledger_page(c,p,ms,nonlead=False,subsection=None):
+    st.header('당사 투입비' if nonlead else '원장 업로드·수기입력')
+    if nonlead:
+        owner=next(x for x in db.projects(c) if x['id']==p)['owner_id'];ms=[m for m in ms if m['company_id']==owner]
+    if nonlead:
+        from contextlib import nullcontext
+        tab1,tab2,tab3=nullcontext(),nullcontext(),st.expander('원장 조회',expanded=True)
+    else:tab1,tab2,tab3=st.tabs(['회원사 원가 수기입력','엑셀 업로드','원장 조회'])
     with tab1:
-        with st.container(border=True):
-            cols=st.columns(3)
-            with cols[0]:
-                who=st.selectbox('원가투입 회사',[m['company_id'] for m in ms],format_func=lambda id:next(m['name'] for m in ms if m['company_id']==id))
-                dt=st.date_input('기표일자');month=st.text_input('배분연월 (YYYY-MM)',date.today().strftime('%Y-%m'))
-            with cols[1]:
-                rec=dict(posting_date=dt,allocation_month=month,account=st.text_input('계정과목'),vendor=st.text_input('거래처명'),description=st.text_input('적요'),note=st.text_input('비고·정정 사유'))
-            with cols[2]:
-                for key,label in [('tax_supply','세금계산서 공급가액 (VAT 제외)'),('vat','부가세 (VAT)'),('invoice','계산서 금액 (면세)'),('receipt','기타영수증 금액')]:rec[key]=money_input(label,'0',key='ledger_'+str(p)+'_'+key)
-            if st.button('합계 확인'):
-                st.info('합계금액: '+money(sum((db.num(rec[k]) for k in ['tax_supply','vat','invoice','receipt']),db.num(0)))+'원')
-            if st.button('원가 저장',type='primary'):db.add_ledger(c,p,who,[rec]);saved()
+        if not nonlead or subsection=='원가 수기입력':
+            with st.container(border=True):
+                cols=st.columns(3)
+                with cols[0]:
+                    who=st.selectbox('원가투입 회사',[m['company_id'] for m in ms],format_func=lambda id:next(m['name'] for m in ms if m['company_id']==id))
+                    dt=st.date_input('기표일자');month=st.text_input('배분연월 (YYYY-MM)',date.today().strftime('%Y-%m'))
+                with cols[1]:
+                    rec=dict(posting_date=dt,allocation_month=month,account=st.text_input('계정과목'),vendor=st.text_input('거래처명'),description=st.text_input('적요'),note=st.text_input('비고·정정 사유'))
+                with cols[2]:
+                    for key,label in [('tax_supply','세금계산서 공급가액 (VAT 제외)'),('vat','부가세 (VAT)'),('invoice','계산서 금액 (면세)'),('receipt','기타영수증 금액')]:rec[key]=money_input(label,'0',key='ledger_'+str(p)+'_'+key)
+                if st.button('합계 확인'):
+                    st.info('합계금액: '+money(sum((db.num(rec[k]) for k in ['tax_supply','vat','invoice','receipt']),db.num(0)))+'원')
+                if st.button('원가 저장',type='primary'):db.add_ledger(c,p,who,[rec]);saved()
     with tab2:
-        st.info('아마란스 실제 양식 확인 전에는 열을 직접 지정합니다. 전표번호와 전표행 식별값으로 중복을 차단하며, 중복이 있으면 파일 전체를 저장하지 않습니다.')
-        wb=openpyxl.Workbook();ws=wb.active;ws.title='원장';ws.append(list(LABELS.values()))
-        stream=BytesIO();wb.save(stream)
-        st.download_button('입력용 빈 엑셀 양식',stream.getvalue(),file_name='공동도급_원장입력양식.xlsx')
-        up=st.file_uploader('원장 엑셀 선택',type=['xlsx'],key='jv_upload_'+str(p))
-        if up:
-            blob=up.getvalue();book=openpyxl.load_workbook(BytesIO(blob),read_only=True,data_only=True)
-            try:
-                sheet=st.selectbox('시트',book.sheetnames);header=st.number_input('제목 행 번호',min_value=1,value=1,step=1)
-                last=st.number_input('마지막 자료 행 (0이면 끝까지)',min_value=0,value=0,step=1)
-                if last and last<=header:raise ValueError('마지막 자료 행은 제목 행 다음이어야 합니다.')
-                cells=next(book[sheet].iter_rows(min_row=int(header),max_row=int(header)),[])
-                options={i+1:f'{openpyxl.utils.get_column_letter(i+1)} · {cell.value or "빈 제목"}' for i,cell in enumerate(cells)}
-                if not options:st.warning('해당 행에 열이 없습니다.');return
-                who=st.selectbox('업로드 원가투입 법인',[m['company_id'] for m in ms],format_func=lambda x:next(m['name'] for m in ms if m['company_id']==x),key='jv_import_company_'+str(p))
-                mapping={}
-                with st.expander('엑셀 열 연결',expanded=True):
-                    for key,label in LABELS.items():
-                        match=next((col for col,text in options.items() if text.split(' · ',1)[1]==label),None)
-                        choices=[None]+list(options);mapping[key]=st.selectbox(label,choices,index=choices.index(match),format_func=lambda x:'사용 안 함' if x is None else options[x],key='jv_map_'+str(p)+'_'+key)
-                if st.button('분석 미리보기'):
-                    records=import_rows(blob,sheet,header,mapping,int(last) or None);st.caption('미리보기는 처음 100행의 합계입니다. 전체 합계는 저장 후 원장 조회에서 확인하세요.');amount_table(pd.DataFrame(records[:100]).rename(columns=LABELS),[LABELS[k] for k in ['tax_supply','vat','invoice','receipt']],[LABELS[k] for k in ['tax_supply','vat','invoice','receipt']]);st.success(f'{len(records):,}행 분석 완료. 저장하려면 아래 버튼을 누르세요.')
-                if st.button('검증 후 원장 전체 저장',type='primary'):
-                    records=import_rows(blob,sheet,header,mapping,int(last) or None);db.add_ledger(c,p,who,records,blob,up.name);saved()
-            finally:book.close()
+        if not nonlead or subsection=='원장 엑셀 등록':
+            st.info('아마란스 실제 양식 확인 전에는 열을 직접 지정합니다. 전표번호와 전표행 식별값으로 중복을 차단하며, 중복이 있으면 파일 전체를 저장하지 않습니다.')
+            wb=openpyxl.Workbook();ws=wb.active;ws.title='원장';ws.append(list(LABELS.values()))
+            stream=BytesIO();wb.save(stream)
+            st.download_button('입력용 빈 엑셀 양식',stream.getvalue(),file_name='공동도급_원장입력양식.xlsx')
+            up=st.file_uploader('원장 엑셀 선택',type=['xlsx'],key='jv_upload_'+str(p))
+            if up:
+                blob=up.getvalue();book=openpyxl.load_workbook(BytesIO(blob),read_only=True,data_only=True)
+                try:
+                    sheet=st.selectbox('시트',book.sheetnames);header=st.number_input('제목 행 번호',min_value=1,value=1,step=1)
+                    last=st.number_input('마지막 자료 행 (0이면 끝까지)',min_value=0,value=0,step=1)
+                    if last and last<=header:raise ValueError('마지막 자료 행은 제목 행 다음이어야 합니다.')
+                    cells=next(book[sheet].iter_rows(min_row=int(header),max_row=int(header)),[])
+                    options={i+1:f'{openpyxl.utils.get_column_letter(i+1)} · {cell.value or "빈 제목"}' for i,cell in enumerate(cells)}
+                    if not options:st.warning('해당 행에 열이 없습니다.');return
+                    who=st.selectbox('업로드 원가투입 법인',[m['company_id'] for m in ms],format_func=lambda x:next(m['name'] for m in ms if m['company_id']==x),key='jv_import_company_'+str(p))
+                    mapping={}
+                    with st.expander('엑셀 열 연결',expanded=True):
+                        for key,label in LABELS.items():
+                            match=next((col for col,text in options.items() if text.split(' · ',1)[1]==label),None)
+                            choices=[None]+list(options);mapping[key]=st.selectbox(label,choices,index=choices.index(match),format_func=lambda x:'사용 안 함' if x is None else options[x],key='jv_map_'+str(p)+'_'+key)
+                    if st.button('분석 미리보기'):
+                        records=import_rows(blob,sheet,header,mapping,int(last) or None);st.caption('미리보기는 처음 100행의 합계입니다. 전체 합계는 저장 후 원장 조회에서 확인하세요.');amount_table(pd.DataFrame(records[:100]).rename(columns=LABELS),[LABELS[k] for k in ['tax_supply','vat','invoice','receipt']],[LABELS[k] for k in ['tax_supply','vat','invoice','receipt']]);st.success(f'{len(records):,}행 분석 완료. 저장하려면 아래 버튼을 누르세요.')
+                    if st.button('검증 후 원장 전체 저장',type='primary'):
+                        records=import_rows(blob,sheet,header,mapping,int(last) or None);db.add_ledger(c,p,who,records,blob,up.name);saved()
+                finally:book.close()
     with tab3:
-        frame=pd.DataFrame(db.ledger(c,p));labels={'id':'원장번호','company':'원가투입 회사','posting_date':'기표일자','allocation_month':'배분연월','account':'계정과목','vendor':'거래처명','description':'적요','tax_supply':'세금계산서 공급가액','vat':'VAT','invoice':'계산서 금액','receipt':'기타영수증 금액','note':'비고'}
+        frame=pd.DataFrame([r for r in db.ledger(c,p) if not nonlead or r['company_id']==owner]);labels={'id':'원장번호','company':'원가투입 회사','posting_date':'기표일자','allocation_month':'배분연월','account':'계정과목','vendor':'거래처명','description':'적요','tax_supply':'세금계산서 공급가액','vat':'VAT','invoice':'계산서 금액','receipt':'기타영수증 금액','note':'비고'}
         frame=frame[[k for k in labels if k in frame.columns]].rename(columns=labels);frame=amount_table(frame,['세금계산서 공급가액','VAT','계산서 금액','기타영수증 금액'],['세금계산서 공급가액','VAT','계산서 금액','기타영수증 금액'])
         st.download_button('원장 CSV 내려받기',safe_csv(frame),file_name='공동도급_원장.csv')
 
@@ -194,7 +203,7 @@ def pick_table(title,records,selected,key,used=None):
     ids=[int(x['id']) for x in frame.to_dict('records') if x['선택'] and int(x['id'])!=0]
     return ids
 
-def entry_form(c,p,m,kind,default_month=None):
+def entry_form(c,p,m,kind,default_month=None,nonlead=False):
     es=flow.source_entries(c,p,m['id'],kind);scope=f"{p}_{m['id']}_{kind}"
     if st.session_state.get('entry_choose_'+scope) not in [None]+[e['id'] for e in es]:st.session_state['entry_choose_'+scope]=None
     selected=st.selectbox('등록·수정할 내역',[None]+[e['id'] for e in es],format_func=lambda id:'새 내역' if id is None else str(id)+' · '+next(e['entry_date']+' '+e['data'].get('label',e['data'].get('vendor','')) for e in es if e['id']==id),key='entry_choose_'+scope)
@@ -203,7 +212,7 @@ def entry_form(c,p,m,kind,default_month=None):
     with st.container(border=True):
         cols=st.columns(3)
         with cols[0]:
-            dt=st.date_input({'receipt':'공사대금 수령일','subcontract':'청구일','recovery':'회수일','opening':'입력일'}[kind],date.fromisoformat(old.get('entry_date',date.today().isoformat())),key='entry_date_'+item_scope)
+            dt=st.date_input({'receipt':'공사대금 수령일','subcontract':'청구일','recovery':'지급일' if nonlead else '회수일','opening':'입력일'}[kind],date.fromisoformat(old.get('entry_date',date.today().isoformat())),key='entry_date_'+item_scope)
             month=dt.isoformat()[:7] if kind in ['receipt','subcontract'] else st.text_input('배분연월 (YYYY-MM)',old.get('period_start',default_month or date.today().strftime('%Y-%m')),key='entry_month_'+item_scope)
             payload={}
             if kind=='receipt':payload['label']=st.text_input('기성 구분 (분할 수령은 같은 구분)',v.get('label',''),key='entry_stage_'+item_scope)
@@ -212,13 +221,13 @@ def entry_form(c,p,m,kind,default_month=None):
             if kind=='opening':
                 payload['arrears']=money_input('전월 미수액',v.get('arrears','0'),key='arrears_'+item_scope);payload['interest']=money_input('지연이자',v.get('interest','0'),key='interest_'+item_scope)
             else:
-                payload['supply']=money_input('수령 공급가액' if kind=='receipt' else '청구 공급가액' if kind=='subcontract' else '회수 공급가액',v.get('supply','0'),key='entry_supply_'+item_scope)
+                payload['supply']=money_input('수령 공급가액' if kind=='receipt' else '청구 공급가액' if kind=='subcontract' else '지급 공급가액' if nonlead else '회수 공급가액',v.get('supply','0'),key='entry_supply_'+item_scope)
                 payload['vat']=money_input('VAT',v.get('vat','0'),key='entry_vat_'+item_scope)
             payload['note']=st.text_area('비고·수정 사유',v.get('note',''),height=90,key='entry_note_'+item_scope)
         with cols[2]:
             if kind=='subcontract':
                 payload['work_type']=st.text_input('공종명',v.get('work_type',''),key='work_'+item_scope);payload['method']=st.text_input('지급방식',v.get('method',''),key='method_'+item_scope)
-                st.caption('하도급은 청구액만 관리합니다. 지급·미지급 관리와 회수 자동 반영은 사용하지 않습니다.')
+                st.caption('하도급 청구액은 이 탭에서, 지급액은 지급내역 입력 탭에서 관리합니다.' if nonlead else '하도급은 청구액만 관리합니다. 지급·미지급 관리와 회수 자동 반영은 사용하지 않습니다.')
             elif kind=='receipt':st.caption('배분월 입력 없이 수령일 기준으로 관리합니다. 관리비·보험료는 수령 범위를 선택해 별도로 정산합니다.')
             keys=['arrears','interest'] if kind=='opening' else ['supply','vat']
             st.metric('합계금액',money(sum((db.num(payload.get(k,0)) for k in keys),db.num(0)))+'원')
@@ -283,13 +292,16 @@ def entry_page(c,p,m):
     with tabs[2]:entry_form(c,p,m,'subcontract')
     with tabs[3]:entry_form(c,p,m,'recovery')
 
-def issue_settings(p,m,kind,data,month=None):
+def issue_settings(p,m,kind,data,month=None,investment=False):
     owner=next(x for x in data['companies'] if x['id']==data['project']['owner_id']);info=json.loads(owner['info']);scope=f"{p}_{m['id']}_{kind}_{month or 'run'}"
     with st.expander('발행 정보 · 문서번호 수동입력 · 공문 문구',expanded=False):
         cols=st.columns(2);number=cols[0].text_input('문서번호 (수동입력)',key='number_'+scope);issued=cols[1].date_input('발행일',key='issued_'+scope)
         meta=dict(number=number,issued=issued.isoformat())
         if kind=='공문':
-            meta.update(title=st.text_input('제목',period_label(month,month)+' 공동원가 안분정산 및 자금청구의 건',key='title_'+scope),reference=st.text_input('참조','공동도급 담당자',key='reference_'+scope),body=st.text_area('본문 추가 문구',key='body_'+scope),due=st.text_input('입금 요청기한',key='due_'+scope),bank=st.text_input('입금계좌',info.get('입금계좌',''),key='bank_'+scope),attachments=st.text_input('첨부목록','공동원가 투입 및 배분내역서 1부, 현장별 원장 1부',key='attachments_'+scope))
+            if investment:
+                meta.update(title=st.text_input('제목',period_label(month,month)+' 공동원가 투입내역 통보',key='investment_title_'+scope),reference=st.text_input('참조','공동도급 담당자',key='investment_reference_'+scope),investment_body=st.text_area('본문','「'+data['project']['name']+'」와 관련한 당사의 공동원가 투입내역을 붙임과 같이 제출하오니, 공동원가 배분시 반영하여 주시기 바랍니다.',key='investment_body_'+scope))
+            else:
+                meta.update(title=st.text_input('제목',period_label(month,month)+' 공동원가 안분정산 및 자금청구의 건',key='title_'+scope),reference=st.text_input('참조','공동도급 담당자',key='reference_'+scope),body=st.text_area('본문 추가 문구',key='body_'+scope),due=st.text_input('입금 요청기한',key='due_'+scope),bank=st.text_input('입금계좌',info.get('입금계좌',''),key='bank_'+scope),attachments=st.text_input('첨부목록','공동원가 투입 및 배분내역서 1부, 현장별 원장 1부',key='attachments_'+scope))
             contact_cols=st.columns(3)
             meta['contact1']=contact_cols[0].text_input('담당자 1 표시',' '.join(str(info.get(k,'')) for k in ['직급','담당자']).strip(),key='contact1_'+scope)
             meta['contact2']=contact_cols[1].text_input('담당자 2 표시',' '.join(str(info.get(k,'')) for k in ['직급2','담당자2']).strip(),key='contact2_'+scope)
@@ -303,6 +315,7 @@ def issue_settings(p,m,kind,data,month=None):
     return number,issued,meta
 
 def settlement_page(c,p,m):
+    nonlead=db.is_nonlead(c,p)
     st.header('원가정산서 · 내역 선택')
     rs=flow.runs(c,p,m['id'])
     if st.session_state.get('_jv_next_run',[])[:2]==[p,m['id']]:st.session_state[f"run_{p}_{m['id']}"]=st.session_state.pop('_jv_next_run')[2]
@@ -319,8 +332,8 @@ def settlement_page(c,p,m):
         st.session_state['claims_override_'+scope]=[r['id'] for r in claims if r['month'] in months]
         st.session_state['claims_bulk_revision_'+scope]=st.session_state.get('claims_bulk_revision_'+scope,0)+1
     claim_defaults=st.session_state.get('claims_override_'+scope,default.get('claims',[]))
-    selection['claims']=pick_table('③ 원가분담금 청구 범위',[{'id':r['id'],'배분월':r['month'],'계정과목':r['account'],'적요':r['description'],'공급가액':r['base'],'VAT':r['vat'],'회원사투입 차감':r['invested']} for r in claims],claim_defaults,'run_claims_'+scope+'_'+str(st.session_state.get('claims_bulk_revision_'+scope,0)),flow.used(c,p,m['id'],'claims',selected))
-    for kind,key,title in [('subcontract','subcontracts','④ 하도급 청구 범위'),('recovery','recoveries','⑤ 회수 범위')]:
+    selection['claims']=pick_table('③ 원가배분 접수 범위' if nonlead else '③ 원가분담금 청구 범위',[{'id':r['id'],'배분월':r['month'],'계정과목':r['account'],'적요':r['description'],'공급가액':r['base'],'VAT':r['vat'],'회원사투입 차감':r['invested']} for r in claims],claim_defaults,'run_claims_'+scope+'_'+str(st.session_state.get('claims_bulk_revision_'+scope,0)),flow.used(c,p,m['id'],'claims',selected))
+    for kind,key,title in [('subcontract','subcontracts','④ 하도급 청구 범위'),('recovery','recoveries','⑤ 지급 범위' if nonlead else '⑤ 회수 범위')]:
         selection[key]=pick_table(title,[{'id':e['id'],'일자':e['entry_date'],'업체·비고':e['data'].get('vendor',e['data'].get('note','')),'공급가액':e['data']['supply'],'VAT':e['data']['vat']} for e in flow.source_entries(c,p,m['id'],kind)],default.get(key,[]),'run_'+key+'_'+scope,flow.used(c,p,m['id'],key,selected))
     if st.button('선택 내역으로 정산 저장',type='primary'):
         rid=flow.save_run(c,p,m['id'],name,selection,selected);st.session_state.pop('claims_override_'+scope,None);st.session_state['_jv_next_run']=[p,m['id'],rid];saved()
@@ -391,16 +404,23 @@ def archive_page(c,p):
 def render(user):
     st.caption('공동도급 관리대장 · 버전 '+VERSION)
     c=db.connect()
+    import joint_nonlead as nl
     with st.sidebar:
         st.subheader('공동도급 관리대장')
-        page=st.radio('공동도급 업무',['법인·담당자','프로젝트·회원사','원장 등록','원가배분내역서','기성·하도급·회수','원가정산서','공문 작성','월 마감·보고서 출력','발행본·백업'],key='jv_page')
+        mode=st.radio('공사 구분',['당사주관공사','당사비주관공사'],key='jv_mode')
+        nonlead=mode=='당사비주관공사'
+        pages=['법인·담당자','프로젝트·회원사','당사 투입비','원가배분·기성·하도급·지급','원가정산서','발행본·백업'] if nonlead else ['법인·담당자','프로젝트·회원사','원장 등록','원가배분내역서','기성·하도급·회수','원가정산서','공문 작성','월 마감·보고서 출력','발행본·백업']
+        if st.session_state.get('jv_page') not in pages:st.session_state['jv_page']=pages[0]
+        page=st.radio('공동도급 업무',pages,key='jv_page')
+        investment_section=st.radio('당사 투입비 하위 메뉴',['원장 엑셀 등록','원가 수기입력','공문 작성'],key='investment_section') if nonlead and page=='당사 투입비' else None
     try:
         if '_jv_success' in st.session_state:st.success(st.session_state.pop('_jv_success'))
-        ps=db.projects(c);p=None;m=None
+        ps=[x for x in db.projects(c) if nl.is_nonlead(c,x['id'])==nonlead];p=None;m=None
         if ps:
             cols=st.columns([2,2,1])
+            if st.session_state.get('jv_project') not in [x['id'] for x in ps]:st.session_state['jv_project']=ps[0]['id']
             p=cols[0].selectbox('공동도급 프로젝트',[x['id'] for x in ps],format_func=lambda id:next(x['name'] for x in ps if x['id']==id),key='jv_project')
-            ms=db.members(c,p);options=[x['id'] for x in ms]
+            ms=db.members(c,p);options=[x['id'] for x in ms if not nonlead or x['company_id']==next(v for v in ps if v['id']==p)['owner_id']]
             if st.session_state.get('jv_member') not in options:st.session_state['jv_member']=options[0] if options else None
             selected=cols[1].selectbox('대상 회원사 (프로젝트 등록 회사)',options,format_func=lambda id:next(x['name'] for x in ms if x['id']==id),key='jv_member')
             m=next((x for x in ms if x['id']==selected),None)
@@ -408,7 +428,11 @@ def render(user):
         if page=='법인·담당자':company_page(c);return
         if page=='프로젝트·회원사':project_page(c,p);return
         if p is None or not m:st.info('법인 등록 후 프로젝트·회원사를 등록하세요.');return
-        if page=='원장 등록':ledger_page(c,p,ms)
+        if page=='당사 투입비':
+            if investment_section=='공문 작성':nl.investment_letter(c,p,ms)
+            else:ledger_page(c,p,ms,True,investment_section)
+        elif page=='원가배분·기성·하도급·지급':nl.entry_page(c,p,m)
+        elif page=='원장 등록':ledger_page(c,p,ms)
         elif page=='발행본·백업':archive_page(c,p)
         elif page=='기성·하도급·회수':entry_page(c,p,m)
         elif page=='원가정산서':settlement_page(c,p,m)
