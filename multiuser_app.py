@@ -73,7 +73,7 @@ def account_panel(user):
                         st.rerun()
                     except (ValueError, PermissionError) as e:
                         st.error(str(e))
-        return st.radio('작업 화면', ['결산 업무', '변경 이력'] + (['사용자 관리'] if user['admin'] else []), key='_workspace')
+        return st.session_state.get('_workspace', '결산 업무')
 
 
 def user_management():
@@ -163,51 +163,58 @@ if not user:
         st.session_state.clear()
     login_screen()
 
-with shared.LOCK:
-    workspace = account_panel(user)
-    if workspace == '사용자 관리':
-        user_management()
-    elif workspace == '변경 이력':
-        history_panel(user)
-    else:
-        program=st.radio('프로그램 선택',['자체결산 보고','엘비데크 월별보고','공동도급 관리대장'],key='main_system',horizontal=True,label_visibility='collapsed')
-        if st.session_state.get('_conflict'):
-            st.error(st.session_state['_conflict'])
-            st.info('저장되지 않은 입력을 복사해 보관한 뒤 왼쪽의 최신 자료 새로고침을 누르세요.')
-            st.stop()
-        context = {'token': token, 'user': user,
-                   'snapshots': st.session_state.get('_snapshots', {}).copy(), 'connections': []}
-        reset = shared.RUN.set(context)
-        failed = False
-        try:
-            from monthly_app import render as render_monthly, legacy_source
-            code = Path(__file__).with_name('app.py')
-            scope = {'__file__': str(code), '__name__': '__finance_app__',
-                     'MULTIUSER_ENTRY': True, 'current_user': user,
-                     'require_admin': require_admin, 'backup_panel': backup_panel}
-            if program=='공동도급 관리대장':
-                from joint_app import render as render_joint
-                render_joint(user)
-            elif program=='엘비데크 월별보고':
-                render_monthly(user)
-            else:
-                source=legacy_source(code.read_text(encoding='utf-8'))
-                exec(compile(source, str(code), 'exec'), scope)
-        except shared.StaleData as e:
-            failed = True
-            st.session_state['_conflict'] = str(e)
-            st.error(str(e))
-            st.info('저장되지 않은 입력을 보관한 뒤 왼쪽의 최신 자료 새로고침을 누르세요.')
-        finally:
-            snapshots = context['snapshots']
-            for c in context['connections']:
-                try:
-                    c.rollback()
-                    if not failed and c.guarded:
-                        snapshots[str(c.path.resolve())] = shared.revision(c)
-                    c.close()
-                except sqlite3.ProgrammingError:
-                    pass
-            if not failed:
-                st.session_state['_snapshots'] = snapshots
-            shared.RUN.reset(reset)
+workspace = account_panel(user)
+try:
+    with shared.LOCK:
+        if workspace == '사용자 관리':
+            user_management()
+        elif workspace == '변경 이력':
+            history_panel(user)
+        else:
+            program=st.radio('프로그램 선택',['자체결산 보고','엘비데크 월별보고','공동도급 관리대장'],key='main_system',horizontal=True,label_visibility='collapsed')
+            if st.session_state.get('_conflict'):
+                st.error(st.session_state['_conflict'])
+                st.info('저장되지 않은 입력을 복사해 보관한 뒤 왼쪽의 최신 자료 새로고침을 누르세요.')
+                st.stop()
+            context = {'token': token, 'user': user,
+                       'snapshots': st.session_state.get('_snapshots', {}).copy(), 'connections': []}
+            reset = shared.RUN.set(context)
+            failed = False
+            try:
+                from monthly_app import render as render_monthly, legacy_source
+                code = Path(__file__).with_name('app.py')
+                scope = {'__file__': str(code), '__name__': '__finance_app__',
+                         'MULTIUSER_ENTRY': True, 'current_user': user,
+                         'require_admin': require_admin, 'backup_panel': backup_panel}
+                if program=='공동도급 관리대장':
+                    from joint_app import render as render_joint
+                    render_joint(user)
+                elif program=='엘비데크 월별보고':
+                    render_monthly(user)
+                else:
+                    source=legacy_source(code.read_text(encoding='utf-8'))
+                    exec(compile(source, str(code), 'exec'), scope)
+            except shared.StaleData as e:
+                failed = True
+                st.session_state['_conflict'] = str(e)
+                st.error(str(e))
+                st.info('저장되지 않은 입력을 보관한 뒤 왼쪽의 최신 자료 새로고침을 누르세요.')
+            finally:
+                snapshots = context['snapshots']
+                for c in context['connections']:
+                    try:
+                        c.rollback()
+                        if not failed and c.guarded:
+                            snapshots[str(c.path.resolve())] = shared.revision(c)
+                        c.close()
+                    except sqlite3.ProgrammingError:
+                        pass
+                if not failed:
+                    st.session_state['_snapshots'] = snapshots
+                shared.RUN.reset(reset)
+
+finally:
+    # Render after each program's sidebar, including early st.stop() paths.
+    with st.sidebar:
+        st.divider()
+        st.radio('작업 화면', ['결산 업무', '변경 이력'] + (['사용자 관리'] if user['admin'] else []), key='_workspace')
