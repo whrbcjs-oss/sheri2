@@ -42,8 +42,8 @@ def ensure_entry_editable(c,p,m,id):
     e=c.execute('SELECT kind,period_start,period_end,entry_date FROM jv_entries WHERE id=? AND project_id=? AND member_id=?',(id,p,m)).fetchone()
     if not e:raise ValueError('수정할 내역이 없습니다.')
     start,end=(e[3][:7],e[3][:7]) if e[0] in ['receipt','subcontract'] else (e[1],e[2])
-    ensure_open(c,p,start,end);key={'receipt':'receipts','subcontract':'subcontracts','recovery':'recoveries'}.get(e[0])
-    if key and id in used(c,p,m,key):raise ValueError('정산 건에 포함된 내역입니다. 해당 정산의 선택을 해제한 뒤 수정하세요.')
+    ensure_open(c,p,start,end);key={'receipt':'receipts','subcontract':'subcontracts','recovery':'recoveries','allocation_receipt':'claims'}.get(e[0])
+    if key and (-id if e[0]=='allocation_receipt' else id) in used(c,p,m,key):raise ValueError('정산 건에 포함된 내역입니다. 해당 정산의 선택을 해제한 뒤 수정하세요.')
     if e[0]=='receipt' and any(id in json.loads(g['receipt_ids']) for g in groups(c,p,m)):raise ValueError('관리비·보험료 정산에 연결된 수령 내역입니다. 관리비 정산의 연결을 해제하거나 삭제한 뒤 수정하세요.')
     if e[0]=='progress':raise ValueError('이전 버전 자료입니다. 자동 이전된 공사대금과 관리비 정산에서 수정하세요.')
 
@@ -121,6 +121,9 @@ def migrate(c):
             c.execute('INSERT INTO jv_legacy_done VALUES(?)',(e['id'],))
 
 def claim_rows(c,p,m):
+    from joint_store import is_nonlead
+    if is_nonlead(c,p):
+        return [dict(id=-e['id'],month=e['period_start'],account=e['data'].get('label',''),description='',base=e['data']['supply'],vat=e['data']['vat'],invested=str(sum((db.num(e['data'][k]) for k in ['asset','sub_input','own_input']),db.num(0)))) for e in source_entries(c,p,m,'allocation_receipt')]
     all_al=db.allocations(c,p,'2000-01','2100-12');raw={e['id']:e for e in db.ledger(c,p)};member=next(x for x in db.members(c,p) if x['id']==m);owner=next(x for x in db.projects(c) if x['id']==p)['owner_id']
     return [dict(id=x['ledger_id'],month=x['allocation_month'],account=x['account'],description=x['description'],base=x['base'],vat=x['vat'],invested=str(db.num(raw[x['ledger_id']]['tax_supply'])+db.num(raw[x['ledger_id']]['invoice'])+db.num(raw[x['ledger_id']]['receipt'])) if member['company_id']!=owner and raw[x['ledger_id']]['company_id']==member['company_id'] else '0') for x in all_al if x['member_id']==m]
 
@@ -160,6 +163,14 @@ def selected_settlement(c,p,m,selection):
     claim_ids=set(sel['claims'])
     raw=[x for x in db.ledger(c,p) if x['id'] in claim_ids];al=[x for x in db.allocations(c,p,'2000-01','2100-12') if x['ledger_id'] in claim_ids]
     d=db.assemble(c,p,m,raw,al,chosen,receipts=receipt_list,claim_only=True)
+    from joint_store import is_nonlead
+    if is_nonlead(c,p):
+        chosen_claims=[claims[i] for i in sel['claims']]
+        totals={k:sum((db.num(x[k]) for x in chosen_claims),db.num(0)) for k in ['base','vat','invested']}
+        a=d['amounts'];a.update({k:str(v) for k,v in totals.items()})
+        a['claim']=str(totals['base']+totals['vat']-totals['invested']+db.num(a['subcontract'])+db.num(a['subcontract_vat']))
+        a['remaining']=str(db.num(a['received'])-db.num(a['deductions'])+totals['vat']+db.num(a['subcontract_vat'])-db.num(a['recovery'])-totals['invested'] if member['fee_enabled'] else db.num(a['claim'])-db.num(a['recovery']))
+        d.update(nonlead=True,direct_claims=chosen_claims)
     d.update(selection=sel,selection_mode=True,receipt_entries=sorted(receipt_list,key=lambda x:(x['entry_date'],x['id'])),management_entries=management,deduction_entries=deduction_entries,warnings=warnings)
     return d
 

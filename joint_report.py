@@ -31,6 +31,11 @@ def period_label(start,end):
 
 def monthly_claims(d):
     m=d['member'];p=d['project'];monthly={}
+    if d.get('nonlead'):
+        for x in d.get('direct_claims',[]):
+            v=monthly.setdefault(x['month'],[num(0),num(0),num(0)])
+            for i,k in enumerate(['base','vat','invested']):v[i]+=num(x[k])
+        return sorted(monthly.items())
     for x in d['allocations']:
         if x['member_id']==m['id']:
             v=monthly.setdefault(x['allocation_month'],[num(0),num(0),num(0)])
@@ -136,6 +141,10 @@ def letter_body(d,meta,number,issued,owner,info):
     if isinstance(seal,str) and len(seal)<1500000 and seal.startswith(('data:image/png;base64,','data:image/jpeg;base64,')):
         import re
         if re.fullmatch(r'data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=]+',seal):body+='<img class="seal" alt="선택한 직인" src="'+esc(seal)+'">'
+    if d.get('investment_letter'):
+        import re
+        text=meta.get('investment_body','「'+p['name']+'」와 관련한 당사의 공동원가 투입내역을 붙임과 같이 제출하오니, 공동원가 배분시 반영하여 주시기 바랍니다.')
+        body=re.sub(r'<div class="letter-paragraphs">.*?<div class="letter-signature">', lambda match: '<div class="letter-paragraphs"><p>1. 귀사의 무궁한 발전을 기원합니다.</p><p>2. '+esc(text)+'</p></div><p style="text-align:center">- 아 래 -</p><div class="letter-table-wrap">'+table(['구분','계산서','영수증','부가세','합계','비고'],[[period_label(d['start'],d['end'])]+[money(d['investment_totals'][k]) for k in ['invoice','receipt','vat','total']]+['']])+'</div><p># 첨부 : 1. 공동원가 투입내역 1부. 끝.</p><div class="letter-signature">',body,flags=re.S)
     return body+'</div></article>'
 
 
@@ -151,6 +160,8 @@ CSS='''
 def render(d,kind='정산서',meta=None,printable=True):
     meta=meta or d.get('meta',{});co={x['id']:x for x in d['companies']};owner=co[d['project']['owner_id']];info=json.loads(owner['info']);issued=d.get('issued',meta.get('issued',''));number=d.get('number',meta.get('number','미확정'))
     letter=kind=='공문';body=letter_body(d,meta,number,issued,owner,info) if letter else settlement_body(d,meta,number,issued)
+    if d.get('nonlead') and not letter:
+        for old,new in [('원가분담금 청구내역','원가배분 접수내역'),('회원사투입','반영투입'),('회 수 내 역','지 급 내 역'),('회수일자','지급일자'),('회수액','지급액'),('미회수액','미지급액'),('회수 내역','지급 내역')]:body=body.replace(old,new)
     if d.get('warnings'):body='<div class="preview-notes">'+''.join('<p>'+esc(x)+'</p>' for x in d['warnings'])+'</div>'+body
     status='확정 발행본' if 'snapshot_id' in d or d.get('number') else '미확정 미리보기'
     page='A4 portrait' if letter else 'A3 landscape'
