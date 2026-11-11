@@ -8,9 +8,9 @@ import shutil
 import sys
 
 ROOT=Path(__file__).resolve().parent
-FILES=['survey_app.py','survey_store.py','survey_report.py','assets/bok_nonmanufacturing_blank.png','table_layout.py','joint_amounts.py','joint_allocation.py','joint_workflow.py','joint_app.py','joint_store.py','joint_report.py','joint_import.py','multiuser_app.py','collaboration.py','monthly_app.py','monthly_store.py',
+FILES=['joint_nonlead.py','survey_app.py','survey_store.py','survey_report.py','assets/bok_nonmanufacturing_blank.png','table_layout.py','joint_amounts.py','joint_allocation.py','joint_workflow.py','joint_app.py','joint_store.py','joint_report.py','joint_import.py','multiuser_app.py','collaboration.py','monthly_app.py','monthly_store.py',
        'monthly_report_preview.py','monthly_preview_template.html','monthly_theme.css','monthly_ledger.py','requirements.lock',
-       'requirements.txt','repair_dependencies.bat']
+       'requirements.txt','repair_dependencies.bat','docs/공동도급_사용안내.md']
 
 
 def update(target):
@@ -53,7 +53,7 @@ def update(target):
     print('프로그램 업데이트 완료:',target)
     print('기존 코드 백업:',backup)
     print('계정, 자체결산 app.py, data 폴더는 변경하지 않았습니다.')
-    print('기존 start.bat을 실행하고 엘비데크 월별보고 → 원장 업로드를 선택하세요.')
+    print('기존 start.bat을 실행하고 공동도급 관리대장 → 당사비주관공사를 선택하세요.')
     return backup
 
 
