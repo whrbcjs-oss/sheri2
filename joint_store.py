@@ -39,6 +39,7 @@ def connect():
     CREATE TABLE IF NOT EXISTS jv_entries(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES jv_projects(id),member_id INTEGER NOT NULL REFERENCES jv_members(id),kind TEXT NOT NULL,entry_date TEXT NOT NULL,period_start TEXT NOT NULL,period_end TEXT NOT NULL,payload TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS jv_documents(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES jv_projects(id),member_id INTEGER NOT NULL REFERENCES jv_members(id),kind TEXT NOT NULL,number TEXT NOT NULL UNIQUE,issued TEXT NOT NULL,snapshot TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP);
     ''')
+    c.execute('CREATE TABLE IF NOT EXISTS jv_project_modes(project_id INTEGER PRIMARY KEY REFERENCES jv_projects(id),nonlead INTEGER NOT NULL DEFAULT 0)')
     import joint_workflow as flow
     flow.install(c)
     import joint_allocation as allocation
@@ -59,7 +60,8 @@ def company(c,code,name,info,id=None):
         if id:c.execute('UPDATE jv_companies SET code=?,name=?,info=? WHERE id=?',(code.strip(),name.strip(),json.dumps(info,ensure_ascii=False),id))
         else:c.execute('INSERT INTO jv_companies(code,name,info) VALUES(?,?,?)',(code.strip(),name.strip(),json.dumps(info,ensure_ascii=False)))
 
-def project(c,name,owner,contract,supply,vat,start,end,entries,id=None):
+def project(c,name,owner,contract,supply,vat,start,end,entries,id=None,nonlead=None):
+    if id and nonlead is not None:validate_project_mode(c,id,nonlead)
     if not name.strip():raise ValueError('공사명을 입력하세요.')
     start,end=day(start),day(end)
     if start>end:raise ValueError('공사기간을 확인하세요.')
@@ -91,6 +93,7 @@ def project(c,name,owner,contract,supply,vat,start,end,entries,id=None):
         for e in entries:
             c.execute('INSERT INTO jv_members(project_id,company_id,share,fee_enabled,fee_rate) VALUES(?,?,?,?,?) ON CONFLICT(project_id,company_id) DO UPDATE SET share=excluded.share,fee_enabled=excluded.fee_enabled,fee_rate=excluded.fee_rate',
                       (id,e['company_id'],str(num(e['share'])),int(e['fee_enabled']),str(num(e['fee_rate']))))
+        if nonlead is not None:c.execute('INSERT INTO jv_project_modes VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET nonlead=excluded.nonlead',(id,int(nonlead)))
     return id
 
 def member_referenced(c,m,p,cid):
@@ -168,7 +171,7 @@ def entries(c,p,m,kind=None):
 
 def save_entry(c,p,m,kind,entry_date,start,end,payload,id=None):
     if m not in [x['id'] for x in members(c,p)]:raise ValueError('회원사를 확인하세요.')
-    if kind not in ['receipt','progress','subcontract','recovery','opening']:raise ValueError('입력 유형을 확인하세요.')
+    if kind not in ['receipt','progress','subcontract','recovery','opening','allocation_receipt']:raise ValueError('입력 유형을 확인하세요.')
     if kind in ['receipt','subcontract']:start=end=day(entry_date)[:7]
     start,end=period(start),period(end)
     if start>end:raise ValueError('대상 기간을 확인하세요.')
@@ -176,12 +179,15 @@ def save_entry(c,p,m,kind,entry_date,start,end,payload,id=None):
     flow.ensure_open(c,p,start,end)
     if id:flow.ensure_entry_editable(c,p,m,id)
     payload=dict(payload)
-    required={'receipt':['supply','vat'],'progress':['supply','vat','fee_rate']+EXCLUSIONS,'subcontract':['supply','vat'],'recovery':['supply','vat'],'opening':['arrears','interest']}[kind]
+    required={'receipt':['supply','vat'],'progress':['supply','vat','fee_rate']+EXCLUSIONS,'subcontract':['supply','vat'],'recovery':['supply','vat'],'opening':['arrears','interest'],'allocation_receipt':['supply','vat','asset','sub_input','own_input']}[kind]
     if kind=='subcontract' and id:
         old=c.execute('SELECT payload FROM jv_entries WHERE id=?',(id,)).fetchone()
         if old:
             previous=json.loads(old[0]);payload={**{k:previous[k] for k in ['paid_date','paid_supply','paid_vat'] if k in previous},**payload}
     for k in required:payload[k]=str(num(payload.get(k,0)))
+    if kind=='allocation_receipt':
+        if not is_nonlead(c,p):raise ValueError('원가배분 접수는 당사비주관공사에서 입력하세요.')
+        payload['total']=str(num(payload['supply'])+num(payload['vat'])-sum((num(payload[k]) for k in ['asset','sub_input','own_input']),Decimal(0)))
     if kind=='receipt' and not str(payload.get('label','')).strip():raise ValueError('기성 구분을 입력하세요. 같은 기성의 분할 수령분은 같은 구분을 사용합니다.')
     if kind=='progress':
         if not 0<=num(payload['fee_rate'])<=100:raise ValueError('관리비율을 확인하세요.')
@@ -252,3 +258,18 @@ def restore(c,payload,token):
             if candidate.execute('PRAGMA foreign_key_check').fetchone():raise ValueError('백업의 프로젝트·회원사 연결이 손상되었습니다.')
     c.rollback()
     return shared.restore_database(token,c.path,payload,c.expected)
+
+
+def is_nonlead(c,p):
+    row=c.execute('SELECT nonlead FROM jv_project_modes WHERE project_id=?',(p,)).fetchone()
+    return bool(row and row[0])
+
+
+def validate_project_mode(c,p,value):
+    if is_nonlead(c,p)!=bool(value) and any(c.execute('SELECT 1 FROM '+t+' WHERE project_id=? LIMIT 1',(p,)).fetchone() for t in ['jv_ledger','jv_entries','jv_runs','jv_documents']):
+        raise ValueError('자료가 등록된 공사의 구분은 변경할 수 없습니다.')
+
+
+def set_project_mode(c,p,value):
+    validate_project_mode(c,p,value)
+    with c:c.execute('INSERT INTO jv_project_modes VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET nonlead=excluded.nonlead',(p,int(value)))
