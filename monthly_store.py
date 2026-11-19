@@ -125,7 +125,7 @@ def save_insurance(c,year,month,amount,reason):
 
 def ledger(c):
     import pandas as pd
-    return pd.read_sql_query('SELECT source_row AS 원장행,posting_date AS 날짜,month AS 월,corporation AS 법인,project AS 프로젝트,vendor AS 거래처,department AS 대분류,category AS 중분류,inflow AS 입금,outflow AS 출금,vat AS 부가세,description AS 적요,note AS 비고 FROM monthly_ledger ORDER BY posting_date,source_row',c)
+    return pd.read_sql_query("SELECT source_row AS 원장행,posting_date AS 기표일자,printf('%04d-%02d',fiscal_year,month) AS 정산월,corporation AS 법인,project AS 프로젝트,vendor AS 거래처,department AS 대분류,category AS 중분류,inflow AS 차변,outflow AS 대변,vat AS VAT,description AS 적요,note AS 비고 FROM monthly_ledger ORDER BY month,posting_date,source_row",c)
 
 
 APPROVAL_GROUPS=['데크거더사업부','본사']

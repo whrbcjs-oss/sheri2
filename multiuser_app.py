@@ -1,15 +1,18 @@
 """Start with: streamlit run multiuser_app.py --server.address 0.0.0.0"""
 from pathlib import Path
 import sqlite3
+from html import escape
 import streamlit as st
 from table_layout import install as install_table_layout
 install_table_layout()
 import collaboration as shared
 
-st.set_page_config(page_title='관계사 통합 수지관리', page_icon='📊', layout='wide')
+st.set_page_config(page_title="HS 경리Job's", page_icon='📊', layout='wide')
 
 # The same stylesheet also covers login, administration and the legacy settlement UI.
-st.markdown('<style>' + Path(__file__).with_name('monthly_theme.css').read_text(encoding='utf-8') + '</style>', unsafe_allow_html=True)
+st.html('<style>' + Path(__file__).with_name('monthly_theme.css').read_text(encoding='utf-8') + '</style>')
+from app_branding import render_sidebar_logo
+render_sidebar_logo()
 
 
 def refresh():
@@ -50,7 +53,9 @@ def require_admin():
 
 def account_panel(user):
     with st.sidebar:
-        st.caption(f"{user['display_name']} ({user['username']}) · {'관리자' if user['admin'] else '사용자'}")
+        name=escape(str(user['display_name']));username=escape(str(user['username']))
+        role='관리자' if user['admin'] else '사용자'
+        st.markdown('<div class="hs-login-info"><div class="hs-login-name">'+name+' ('+username+')</div><span class="hs-login-role">'+role+'</span></div>',unsafe_allow_html=True)
         with st.expander('계정 · 새로고침'):
             if st.button('로그아웃'):
                 shared.logout(st.session_state.get('_auth_token'))
@@ -61,7 +66,7 @@ def account_panel(user):
             with st.expander('내 비밀번호 변경'):
                 with st.form('my_password'):
                     old = st.text_input('현재 비밀번호', type='password')
-                    new = st.text_input('새 비밀번호 (12자 이상)', type='password')
+                    new = st.text_input('새 비밀번호 (8자 이상)', type='password')
                     confirm = st.text_input('새 비밀번호 확인', type='password')
                     submit = st.form_submit_button('비밀번호 변경')
                 if submit:
@@ -87,7 +92,7 @@ def user_management():
         st.subheader('계정 추가')
         username = st.text_input('새 아이디')
         name = st.text_input('이름')
-        password = st.text_input('초기 비밀번호 (12자 이상)', type='password')
+        password = st.text_input('초기 비밀번호 (8자 이상)', type='password')
         admin = st.checkbox('관리자 권한 부여')
         submit = st.form_submit_button('계정 생성')
     if submit:
@@ -110,10 +115,13 @@ def user_management():
         except (ValueError, PermissionError) as e:
             st.error(str(e))
 
+    from mail_app import settings_panel
+    settings_panel(st.session_state['_auth_token'])
+
 
 def history_panel(user):
     st.title('변경 이력')
-    files = sorted(list(shared.DATA.glob('finance_*.db')) + list(shared.DATA.glob('lb_monthly_*.db')) + list(shared.DATA.glob('joint_venture.db')) + list(shared.DATA.glob('business_survey.db')))
+    files = sorted(list(shared.DATA.glob('finance_*.db')) + list(shared.DATA.glob('lb_monthly_*.db')) + list(shared.DATA.glob('joint_venture.db')) + list(shared.DATA.glob('business_survey.db')) + list(shared.DATA.glob('loans.db')) + list(shared.DATA.glob('accommodations.db')) + list(shared.DATA.glob('resident_tax.db')) + list(shared.DATA.glob('corporate_close.db')))
     if files:
         path = st.selectbox('회계연도 DB', files, format_func=lambda p: p.stem)
         with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as c:
@@ -171,7 +179,9 @@ try:
         elif workspace == '변경 이력':
             history_panel(user)
         else:
-            program=st.radio('프로그램 선택',['자체결산 보고','엘비데크 월별보고','공동도급 관리대장','한국은행 기업경기조사'],key='main_system',horizontal=True,label_visibility='collapsed')
+            from app_navigation import render as render_navigation, HOME
+            program=render_navigation()
+            st.html('<div class="hs-field-legend"><span><i></i>직접 입력</span><span class="auto"><i></i>자동 계산·읽기 전용</span></div>')
             if st.session_state.get('_conflict'):
                 st.error(st.session_state['_conflict'])
                 st.info('저장되지 않은 입력을 복사해 보관한 뒤 왼쪽의 최신 자료 새로고침을 누르세요.')
@@ -186,12 +196,27 @@ try:
                 scope = {'__file__': str(code), '__name__': '__finance_app__',
                          'MULTIUSER_ENTRY': True, 'current_user': user,
                          'require_admin': require_admin, 'backup_panel': backup_panel}
-                if program=='한국은행 기업경기조사':
+                if program==HOME:
+                    from accounting_calendar import render as render_calendar
+                    render_calendar(user)
+                elif program=='주민세(사업소분) 관리':
+                    from resident_tax_app import render as render_resident_tax
+                    render_resident_tax(user)
+                elif program=='현장숙소(전·월세)관리':
+                    from accommodation_app import render as render_accommodation
+                    render_accommodation(user)
+                elif program=='대여금관리':
+                    from loan_app import render as render_loans
+                    render_loans(user)
+                elif program=='한국은행 기업경기조사':
                     from survey_app import render as render_survey
                     render_survey(user)
                 elif program=='공동도급 관리대장':
                     from joint_app import render as render_joint
                     render_joint(user)
+                elif program=='법인결산':
+                    from corporate_close_app import render as render_corporate_close
+                    render_corporate_close(user)
                 elif program=='엘비데크 월별보고':
                     render_monthly(user)
                 else:

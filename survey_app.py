@@ -5,7 +5,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 import survey_store as db
 from survey_report import html_preview,pdf
-VERSION='2026.11.02.3'
+VERSION='2026.11.02.2'
 
 def notice(message):st.session_state['_bs_notice']=message;st.rerun()
 def download_document(c,id):
@@ -18,7 +18,6 @@ def download_document(c,id):
 def render(user):
  st.caption('한국은행 기업경기조사 · 버전 '+VERSION)
  with st.sidebar:
-  st.subheader('한국은행 기업경기조사')
   page=st.radio('기업경기조사 업무',['월별 조사표 작성','작성 내역·출력','회사 기본정보'],key='bs_page')
  c=db.connect();companies=db.companies(c)
  selectors=st.columns([2,1,1])
@@ -32,9 +31,10 @@ def render(user):
   st.title('회사 기본정보');st.caption('회사별로 한 번 등록합니다. 저장된 월별 조사표와 과거 출력본은 자동으로 바뀌지 않습니다.')
   values=db.company(c,company_id);new={}
   with st.form('bs_profile_'+str(company_id)):
-   cols=st.columns(3)
-   for i,(k,label) in enumerate(db.FIELDS.items()):
-    with cols[i%3]:new[k]=st.text_input(label,values.get(k,''))
+   groups=[['name'],['address','factory'],['product1','product2'],['export_ratio','employees'],['author','department','position'],['phone','email','fax']]
+   for group in groups:
+    columns=st.columns(len(group))
+    for column,k in zip(columns,group):new[k]=column.text_input(db.FIELDS[k],values.get(k,''))
    submit=st.form_submit_button('회사 기본정보 저장',type='primary')
   if submit:
    try:db.profile(c,company_id,new);notice('회사 기본정보를 저장했습니다.')

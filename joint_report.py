@@ -30,7 +30,14 @@ def period_label(start,end):
 
 
 def monthly_claims(d):
+    if d.get('combined_monthly_claims'):
+        return [(month,[num(value) for value in values]) for month,values in d['combined_monthly_claims']]
     m=d['member'];p=d['project'];monthly={}
+    if d.get('nonlead'):
+        for x in d.get('direct_claims',[]):
+            v=monthly.setdefault(x['month'],[num(0),num(0),num(0)])
+            for i,k in enumerate(['base','vat','invested']):v[i]+=num(x[k])
+        return sorted(monthly.items())
     for x in d['allocations']:
         if x['member_id']==m['id']:
             v=monthly.setdefault(x['allocation_month'],[num(0),num(0),num(0)])
@@ -42,9 +49,71 @@ def monthly_claims(d):
     return sorted(monthly.items())
 
 
+def combined_settlement(documents):
+    """Build one printable statement from all final monthly confirmations.
+
+    Each month remains an independent detail row.  Totals are calculated only
+    for the footer; confirmed months are never collapsed into one detail row.
+    """
+    if not documents:raise ValueError('확정 정산서가 없습니다.')
+    latest=documents[-1]
+    result=dict(latest)
+    monthly={}
+    warnings=[]
+    receipts={}
+    ordinary={}
+    management={}
+    deductions={}
+    for document in documents:
+        for month,values in monthly_claims(document):monthly[month]=[str(num(value)) for value in values]
+        for warning in document.get('warnings',[]):
+            if warning not in warnings:warnings.append(warning)
+        for entry in document.get('receipt_entries',[]):receipts[entry['id']]=entry
+        for entry in document.get('entries',[]):
+            if entry.get('kind') in ('subcontract','recovery'):ordinary[(entry['kind'],entry['id'])]=entry
+        for target,name in [(management,'management_entries'),(deductions,'deduction_entries')]:
+            for entry in document.get(name,[]):
+                signature=(entry.get('id'),json.dumps(entry.get('data',{}),sort_keys=True,ensure_ascii=False))
+                target[signature]=entry
+    months=sorted(monthly)
+    receipt_entries=sorted(receipts.values(),key=lambda entry:(entry.get('entry_date',''),entry.get('id',0)))
+    entries=sorted(ordinary.values(),key=lambda entry:(entry.get('entry_date',''),entry.get('id',0)))
+    management_entries=list(management.values());deduction_entries=list(deductions.values())
+    base=sum((num(monthly[month][0]) for month in months),num(0))
+    vat=sum((num(monthly[month][1]) for month in months),num(0))
+    invested=sum((num(monthly[month][2]) for month in months),num(0))
+    subs=[entry for entry in entries if entry['kind']=='subcontract']
+    recoveries=[entry for entry in entries if entry['kind']=='recovery']
+    sub=sum((num(entry['data'].get('supply')) for entry in subs),num(0))
+    subvat=sum((num(entry['data'].get('vat')) for entry in subs),num(0))
+    paid=sum((num(entry['data'].get('paid_supply'))+num(entry['data'].get('paid_vat')) for entry in subs),num(0))
+    recovered=sum((num(entry['data'].get('supply'))+num(entry['data'].get('vat')) for entry in recoveries),num(0))+paid
+    received=sum((num(entry['data'].get('supply')) for entry in receipt_entries),num(0))
+    calculations=receipt_entries+deduction_entries
+    fee=sum((num(entry['data'].get('fee')) for entry in calculations),num(0))
+    industrial=sum((num(entry['data'].get('산재보험')) for entry in calculations),num(0))
+    employment=sum((num(entry['data'].get('고용보험')) for entry in calculations),num(0))
+    deductions_total=fee+industrial+employment
+    claim=base+vat-invested+sub+subvat
+    member=result['member']
+    remaining=(received-deductions_total+vat+subvat-recovered-invested) if member['fee_enabled'] else claim-recovered
+    amounts=dict(result.get('amounts',{}),base=str(base),vat=str(vat),invested=str(invested),subcontract=str(sub),subcontract_vat=str(subvat),subcontract_paid=str(paid),received=str(received),fee=str(fee),industrial=str(industrial),employment=str(employment),deductions=str(deductions_total),recovery=str(recovered),claim=str(claim),remaining=str(remaining),total_base=str(base),total_vat=str(vat))
+    result.update(
+        combined_monthly_claims=[(month,monthly[month]) for month in months],
+        receipt_entries=receipt_entries,management_entries=management_entries,
+        deduction_entries=deduction_entries,entries=entries,amounts=amounts,
+        warnings=warnings,start=months[0] if months else result.get('start',''),
+        end=months[-1] if months else result.get('end',''),
+        run_name=('확정 정산내역 '+months[0]+' ~ '+months[-1]) if months else '전체 확정 정산내역',
+        combined_document_count=len(documents),
+    )
+    return result
+
+
 def settlement_body(d,meta,number,issued):
     p,m,a=d['project'],d['member'],d['amounts'];entries=d['entries']
     management=d.get('management_entries',[e for e in entries if e['kind']=='progress']);progress=d.get('receipt_entries',[e for e in entries if e['kind']=='progress'])+d.get('deduction_entries',[]);recoveries=[e for e in entries if e['kind']=='recovery'];subs=[e for e in entries if e['kind']=='subcontract'];claims=monthly_claims(d)
+    enabled=bool(m['fee_enabled']);receipt_columns=9 if enabled else 5
     rates={e['data'].get('fee_rate',m['fee_rate']) for e in management}
     fee_label=('관리비 ('+(next(iter(rates)) if len(rates)==1 else '기성별')+('%)' if len(rates)==1 else ')')) if m['fee_enabled'] else '관리비 (미적용)'
     body='<section class="settlement-sheet"><div class="sheet-heading"><h1>■ 공동도급 공사원가 정산내역 · '+esc(m['name'])+' <span>'+esc(m['share'])+'%</span></h1><div>'+esc(p['name'])+'</div></div>'
@@ -52,41 +121,52 @@ def settlement_body(d,meta,number,issued):
     body+='<div class="sheet-meta"><span>'+scope+'</span><span>문서번호: '+esc(number)+'　발행일: '+esc(issued)+'　[단위: 원]</span></div>'
     body+='<div class="sheet-scroll"><table id="settlement-grid" class="settlement-grid"><colgroup>'
     widths=[4.2,4.4,6.1,4.5,6.2,4.5,4.5,4.5,5.8,4.2,4.1,6.1,4.5,4.8,6.1,4.2,6.1,4.5,6.1,6.1,6.8]
+    if not enabled:widths=widths[:5]+widths[9:]
     body+=''.join('<col style="width:'+str(w/sum(widths)*100)+'%">' for w in widths)+'</colgroup>'
-    body+='<thead><tr><th colspan="5">공사대금 수령</th><th colspan="4">공 제 내 역</th><th colspan="6">원가분담금 청구내역</th><th colspan="4">회 수 내 역</th><th rowspan="2">미회수액<br>(①−②+③−④−⑤)</th><th rowspan="2">비 고</th></tr><tr>'
-    body+=''.join('<th>'+esc(x).replace('\n','<br>')+'</th>' for x in ['수령일자','구분','공급가액\n①','VAT','계',fee_label,'산재보험','고용보험','공제계\n②','청구연월','구분','공급가액','VAT\n③','회원사투입\n④','계','회수일자','공급가액','VAT','회수액\n⑤'])+'</tr></thead><tbody>'
-    for i in range(max(14,len(progress),len(claims),len(recoveries))):
+    deduction_header='<th colspan="4">공 제 내 역</th>' if enabled else ''
+    remaining_label='미회수액<br>(①−②+③−④−⑤)' if enabled else '미회수액<br>(청구내역 계−회수액 계)'
+    body+='<thead><tr><th colspan="5">공사대금 수령</th>'+deduction_header+'<th colspan="6">원가분담금 청구내역</th><th colspan="4">회 수 내 역</th><th rowspan="2">'+remaining_label+'</th><th rowspan="2">비 고</th></tr><tr>'
+    headers=['수령일자','구분','공급가액\n①','VAT','계']+([fee_label,'산재보험','고용보험','공제계\n②'] if enabled else [])+['청구연월','구분','공급가액','VAT\n③','회원사투입\n④','계','회수일자','공급가액','VAT','회수액\n⑤']
+    body+=''.join('<th>'+esc(x).replace('\n','<br>')+'</th>' for x in headers)+'</tr></thead><tbody>'
+    display_recoveries=list(recoveries)
+    display_recoveries.sort(key=lambda e:(e['entry_date'],e['id']))
+    for i in range(max(14,len(progress),len(claims),len(display_recoveries))):
         row=''
         if i<len(progress):
             e=progress[i];v=e['data'];fee=num(v['fee']) if m['fee_enabled'] else num(0);industrial=num(v['산재보험']);employment=num(v['고용보험'])
-            row+=td(short_date(e['entry_date']))+td(v.get('label',''))+numeric_cells([v['supply'],v['vat'],num(v['supply'])+num(v['vat']),fee,industrial,employment,fee+industrial+employment])
-        else:row+='<td></td>'*9
+            row+=td(short_date(e['entry_date']))+td(v.get('label',''))+numeric_cells([v['supply'],v['vat'],num(v['supply'])+num(v['vat'])]+([fee,industrial,employment,fee+industrial+employment] if enabled else []))
+        else:row+='<td></td>'*receipt_columns
         if i<len(claims):
             month,v=claims[i];row+=td(month)+td(str(int(month[-2:]))+'월분')+numeric_cells(v+[v[0]+v[1]-v[2]])
         else:row+='<td></td>'*6
-        if i<len(recoveries):
-            e=recoveries[i];v=e['data'];row+=td(short_date(e['entry_date']))+numeric_cells([v['supply'],v['vat'],num(v['supply'])+num(v['vat'])]);note=v.get('note','')
+        if i<len(display_recoveries):
+            e=display_recoveries[i];v=e['data'];row+=td(short_date(e['entry_date']))+numeric_cells([v['supply'],v['vat'],num(v['supply'])+num(v['vat'])]);note=v.get('note','')
         else:row+='<td></td>'*4;note=''
         body+='<tr class="data-row">'+row+td('')+td(note,**{'class':'text-note'})+'</tr>'
-    base=num(a['base']);vat=num(a['vat']);invested=num(a['invested']);sub=num(a['subcontract']);subvat=num(a['subcontract_vat']);paid_supply=num(0) if d.get('claim_only') else sum((num(e['data'].get('paid_supply',0)) for e in subs),num(0));paid_vat=num(0) if d.get('claim_only') else sum((num(e['data'].get('paid_vat',0)) for e in subs),num(0));rs=sum((num(e['data']['supply']) for e in recoveries),num(0));rv=sum((num(e['data']['vat']) for e in recoveries),num(0))
-    body+='<tr class="subtotal">'+td('',colspan='9')+td('소계(원가분담금)',colspan='2')+numeric_cells([base,vat,invested,base+vat-invested])+td('')+numeric_cells([rs,rv,rs+rv])+td('')+td('')+'</tr>'
-    body+='<tr class="subtotal">'+td('',colspan='9')+td('소계(하도급대금)',colspan='2')+numeric_cells([sub,subvat,0,sub+subvat])+td('')+numeric_cells([paid_supply,paid_vat,paid_supply+paid_vat])+td('')+td('')+'</tr>'
+    base=num(a['base']);vat=num(a['vat']);invested=num(a['invested']);sub=num(a['subcontract']);subvat=num(a['subcontract_vat']);paid_supply=sum((num(e['data'].get('paid_supply',0)) for e in subs),num(0));paid_vat=sum((num(e['data'].get('paid_vat',0)) for e in subs),num(0));rs=sum((num(e['data']['supply']) for e in recoveries),num(0));rv=sum((num(e['data']['vat']) for e in recoveries),num(0))
+    if d.get('claim_only') and not d.get('simultaneous_subcontracts'):paid_supply=paid_vat=num(0)
+    body+='<tr class="subtotal">'+td('',colspan=str(receipt_columns))+td('소계(원가분담금)',colspan='2')+numeric_cells([base,vat,invested,base+vat-invested])+td('')+numeric_cells([rs,rv,rs+rv])+td('')+td('')+'</tr>'
+    body+='<tr class="subtotal">'+td('',colspan=str(receipt_columns))+td('소계(하도급대금)',colspan='2')+numeric_cells([sub,subvat,0,sub+subvat])+td('')+numeric_cells([paid_supply,paid_vat,paid_supply+paid_vat])+td('')+td('')+'</tr>'
     receipt_vat=sum((num(e['data']['vat']) for e in progress),num(0))
-    body+='<tr class="grand-total">'+td('합 계',colspan='2')+numeric_cells([a['received'],receipt_vat,num(a['received'])+receipt_vat,a['fee'],a['industrial'],a['employment'],a['deductions']])+td('합 계',colspan='2')+numeric_cells([base+sub,vat+subvat,invested,a['claim']])+td('합 계')+numeric_cells([rs+paid_supply,rv+paid_vat,a['recovery'],a['remaining']])+td('')+'</tr></tbody></table></div>'
+    body+='<tr class="grand-total">'+td('합 계',colspan='2')+numeric_cells([a['received'],receipt_vat,num(a['received'])+receipt_vat]+([a['fee'],a['industrial'],a['employment'],a['deductions']] if enabled else []))+td('합 계',colspan='2')+numeric_cells([base+sub,vat+subvat,invested,a['claim']])+td('합 계')+numeric_cells([rs+paid_supply,rv+paid_vat,a['recovery'],a['remaining']])+td('')+'</tr></tbody></table></div>'
     rule='① − ② + ③ − ④ − ⑤' if m['fee_enabled'] else '청구내역 계 − 회수액 계'
     body+='<div class="sheet-bottom"><span>미회수액 산식: '+esc(rule)+'</span><span>청구연월은 원장의 배분월 기준입니다. 각 영역은 독립된 내역이며 같은 행이 동일 거래를 의미하지 않습니다.</span></div></section>'
+    if d.get('nonlead') and d.get('nonlead_status'):
+        from joint_status_report import render as status_report
+        body=body[:-10]+status_report(d['nonlead_status'])+'</section>'
     # Supporting sheet 2 follows the supplied horizontal milestone layout.
-    body+='<section class="support-sheet"><h2>■ 관리비 산출내역 · '+esc(m['name'])+'</h2><div class="sheet-scroll"><table id="management-grid"><thead><tr><th>구분</th>'
-    slots=management or [None]
-    body+=''.join('<th>'+esc(e['data'].get('label') or e['entry_date'] if e else '관리비·보험료 미선택')+'</th>' for e in slots)+'<th>소계</th></tr></thead><tbody>'
-    lines=[('공급가액',lambda v:num(v['supply']))]+[(k,lambda v,k=k:num(v[k])) for k in EXCLUSIONS]+[('제외분 합계',lambda v:sum((num(v[k]) for k in EXCLUSIONS),num(0))),('관리대상액',lambda v:num(v['supply'])-sum((num(v[k]) for k in EXCLUSIONS),num(0))),('관리비',lambda v:num(v['fee']) if m['fee_enabled'] else num(0))]
-    for label,fn in lines:
-        if label=='관리비':
-            body+='<tr>'+td('비율')+''.join(td((e['data']['fee_rate']+'%') if e and m['fee_enabled'] else '미적용') for e in slots)+td('')+'</tr>'
-        values=[fn(e['data']) if e else num(0) for e in slots]
-        body+='<tr class="'+('subtotal' if label in ['제외분 합계','관리대상액','관리비'] else '')+'">'+td(label)+numeric_cells(values+[sum(values,num(0))])+'</tr>'
-    body+='</tbody></table></div><p class="sheet-bottom">보험료·제외항목은 회원사분 입력액입니다. 관리비는 기성별 원 미만 버림을 적용합니다.</p></section>'
-    if d.get('claim_only'):
+    if enabled:
+        body+='<section class="support-sheet"><h2>■ 관리비 산출내역 · '+esc(m['name'])+'</h2><div class="sheet-scroll"><table id="management-grid"><thead><tr><th>구분</th>'
+        slots=management or [None]
+        body+=''.join('<th>'+esc(e['data'].get('label') or e['entry_date'] if e else '관리비·보험료 미선택')+'</th>' for e in slots)+'<th>소계</th></tr></thead><tbody>'
+        lines=[('공급가액',lambda v:num(v['supply']))]+[(k,lambda v,k=k:num(v[k])) for k in EXCLUSIONS]+[('제외분 합계',lambda v:sum((num(v[k]) for k in EXCLUSIONS),num(0))),('관리대상액',lambda v:num(v['supply'])-sum((num(v[k]) for k in EXCLUSIONS),num(0))),('관리비',lambda v:num(v['fee']) if m['fee_enabled'] else num(0))]
+        for label,fn in lines:
+            if label=='관리비':
+                body+='<tr>'+td('비율')+''.join(td((e['data']['fee_rate']+'%') if e and m['fee_enabled'] else '미적용') for e in slots)+td('')+'</tr>'
+            values=[fn(e['data']) if e else num(0) for e in slots]
+            body+='<tr class="'+('subtotal' if label in ['제외분 합계','관리대상액','관리비'] else '')+'">'+td(label)+numeric_cells(values+[sum(values,num(0))])+'</tr>'
+        body+='</tbody></table></div><p class="sheet-bottom">보험료·제외항목은 회원사분 입력액입니다. 관리비는 기성별 원 미만 버림을 적용합니다.</p></section>'
+    if d.get('claim_only') and not d.get('simultaneous_subcontracts'):
         body+='<section class="support-sheet"><h2>■ 하도급 청구내역 ['+esc(m['name'])+']</h2><div class="sheet-scroll"><table id="subcontract-grid"><thead><tr>'
         body+=''.join('<th>'+x+'</th>' for x in ['청구일','업체명','공급가액','VAT','합계금액','공종명','지급방식','비고'])+'</tr></thead><tbody>'
         for e in subs:
@@ -131,11 +211,30 @@ def letter_body(d,meta,number,issued,owner,info):
     for i,x in enumerate(attachments.replace('\n',',').split(','),1):
         if x.strip():body+='<div>'+esc(str(i)+'. '+x.strip())+'</div>'
     body+='끝.</div></div></div><div class="letter-signature"><div>'+esc(owner['name'])+'</div><div>대표이사　'+esc(info.get('대표자',''))+'</div>'
+    if meta.get('signature_layout')==1:
+        def distributed(text):
+            return ''.join('<span>'+esc(ch)+'</span>' for ch in str(text) if not ch.isspace())
+        old='<div>'+esc(owner['name'])+'</div><div>대표이사　'+esc(info.get('대표자',''))+'</div>'
+        new='<div class="sender-lines"><div class="sender-line">'+distributed(owner['name'])+'</div><div class="sender-line">'+distributed('대표이사'+info.get('대표자',''))+'</div></div>'
+        body=body.replace(old,new,1)
     # Only an explicitly selected PNG/JPEG data URL is embedded, never arbitrary markup.
     seal=meta.get('seal','')
     if isinstance(seal,str) and len(seal)<1500000 and seal.startswith(('data:image/png;base64,','data:image/jpeg;base64,')):
         import re
         if re.fullmatch(r'data:image/(?:png|jpeg);base64,[A-Za-z0-9+/=]+',seal):body+='<img class="seal" alt="선택한 직인" src="'+esc(seal)+'">'
+    if d.get('investment_letter'):
+        import re
+        text=meta.get('investment_body','「'+p['name']+'」와 관련한 당사의 공동원가 투입내역을 붙임과 같이 제출하오니, 공동원가 배분시 반영하여 주시기 바랍니다.')
+        body=re.sub(r'<div class="letter-paragraphs">.*?<div class="letter-signature">', lambda match: '<div class="letter-paragraphs"><p>1. 귀사의 무궁한 발전을 기원합니다.</p><p>2. '+esc(text)+'</p></div><p style="text-align:center">- 아 래 -</p><div class="letter-table-wrap">'+table(['구분','계산서','영수증','부가세','합계','비고'],[[period_label(d['start'],d['end'])]+[money(d['investment_totals'][k]) for k in ['invoice','receipt','vat','total']]+['']])+'</div><p># 첨부 : 1. 공동원가 투입내역 1부. 끝.</p><div class="letter-signature">',body,flags=re.S)
+    if meta.get('uploaded_files'):
+        names=[row['name'] for row in meta['uploaded_files']]
+        if d.get('investment_letter'):
+            listing='<div class="attachments letter-extra-names"><span># 첨부 :</span><div><div>1. 공동원가 투입내역 1부.</div>'+''.join('<div>'+esc(str(i)+'. '+name+' 1부.')+'</div>' for i,name in enumerate(names,2))+'끝.</div></div>'
+            body=body.replace('<p># 첨부 : 1. 공동원가 투입내역 1부. 끝.</p>',listing,1)
+        else:
+            start=len([x for x in (meta.get('attachments') or '공동원가 투입 및 배분내역서 1부, 현장별 원장 1부').replace('\n',',').split(',') if x.strip()])+1
+            extra=''.join('<div class="letter-extra-names">'+esc(str(i)+'. '+name+' 1부.')+'</div>' for i,name in enumerate(names,start))
+            body=body.replace('끝.</div></div></div><div class="letter-signature">',extra+'끝.</div></div></div><div class="letter-signature">',1)
     return body+'</div></article>'
 
 
@@ -151,18 +250,39 @@ CSS='''
 def render(d,kind='정산서',meta=None,printable=True):
     meta=meta or d.get('meta',{});co={x['id']:x for x in d['companies']};owner=co[d['project']['owner_id']];info=json.loads(owner['info']);issued=d.get('issued',meta.get('issued',''));number=d.get('number',meta.get('number','미확정'))
     letter=kind=='공문';body=letter_body(d,meta,number,issued,owner,info) if letter else settlement_body(d,meta,number,issued)
+    if d.get('nonlead') and not letter:
+        for old,new in [('원가분담금 청구내역','원가배분 접수내역'),('회원사투입','반영투입'),('회 수 내 역','지 급 내 역'),('회수일자','지급일자'),('회수액','지급액'),('미회수액','미지급액'),('회수 내역','지급 내역')]:body=body.replace(old,new)
     if d.get('warnings'):body='<div class="preview-notes">'+''.join('<p>'+esc(x)+'</p>' for x in d['warnings'])+'</div>'+body
     status='확정 발행본' if 'snapshot_id' in d or d.get('number') else '미확정 미리보기'
     page='A4 portrait' if letter else 'A3 landscape'
     control='<button onclick="window.print()">인쇄 / PDF 저장</button>' if printable else '<button disabled>월 마감 후 출력 가능</button>'
-    return '<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(kind)+'</title><style>'+CSS+'@page{size:'+page+';margin:12mm}</style></head><body><div class="tools"><span class="status">'+esc(status)+' · 금액 단위: 원</span>'+control+'</div><main class="document '+('document-letter' if letter else 'document-settlement')+'">'+body+'</main></body></html>'
+    layout=letter and d.get('letter_layout_version',0)>=2
+    extra_css='';fit_script=''
+    if layout:
+        from joint_letter_pages import CSS as letter_css,ledger_pages,FIT_SCRIPT
+        extra_css=letter_css;fit_script=FIT_SCRIPT
+        if d.get("investment_letter") and d.get("letter_layout_version",0)>=3:
+            from joint_investment_print import CSS as investment_css
+            extra_css+=investment_css
+        if len(str(meta.get('investment_body',''))+str(meta.get('body',''))+str(meta.get('title',''))+''.join(row['name'] for row in meta.get('uploaded_files',[])))>900:
+            body=body.replace('<article class="official-letter">','<article class="official-letter letter-flow">',1)
+        if d.get('investment_letter') and not meta.get('mail_no_ledger_append'):body+=ledger_pages(d)
+    if layout and d.get('lead_letter_layout_version')==1 and not d.get('investment_letter'):
+        from joint_lead_letter import CSS as lead_css,FIT_SCRIPT as lead_fit,wrap as lead_wrap
+        body=lead_wrap(body);extra_css+=lead_css;fit_script=lead_fit
+    if letter and meta.get('uploaded_files') and not meta.get('mail_no_embedded_files'):
+        from joint_letter_files import unpack,name as safe_name
+        import base64
+        links=''.join('<a download="'+esc(safe_name(row['name']))+'" href="data:application/octet-stream;base64,'+base64.b64encode(unpack(row)).decode()+'">'+esc(row['name'])+'</a>' for row in meta['uploaded_files'])
+        control+='<div class="file-links">'+links+'</div>'
+    return '<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>'+esc(kind)+'</title><style>'+CSS+'@page{size:'+page+';margin:12mm}'+extra_css+'</style></head><body><div class="tools"><span class="status">'+esc(status)+' · 금액 단위: 원</span>'+control+'</div><main class="document '+('document-letter'+(' letter-v2' if layout else '') if letter else 'document-settlement')+'">'+body+'</main>'+fit_script+'</body></html>'
 
 
 def monthly_package(package,member_id,meta):
     """Only accepts a server-frozen close package, never live mutable source rows."""
     from io import BytesIO
     import base64,hashlib,zipfile
-    month=package['month'];project=package['project']['name'];letter=render(package['letters'][str(member_id)],'공문',meta)
+    month=package['month'];project=package['project']['name'];letter=render(dict(package['letters'][str(member_id)],letter_layout_version=2,lead_letter_layout_version=1),'공문',meta)
     ledger_headers=['원장ID','기표일자','배분연월','원가투입 회사','계정과목','거래처','적요','세금계산서 공급가액','VAT','계산서','기타영수증','합계','입력 출처','비고']
     ledger_rows=[]
     for r in package['ledger']:
@@ -179,6 +299,9 @@ def monthly_package(package,member_id,meta):
     stream=BytesIO()
     with zipfile.ZipFile(stream,'w',zipfile.ZIP_DEFLATED) as z:
         for name,html in [('공문.html',letter),('해당월_원장.html',ledger_html),('원가배분내역서.html',alloc_html)]:z.writestr(name,html.encode('utf-8'))
+        for i,row in enumerate(meta.get('uploaded_files',[]),1):
+            from joint_letter_files import unpack,name as safe_name
+            z.writestr('추가서류/'+str(i)+'_'+safe_name(row['name']),unpack(row))
         for original in package.get('originals',[]):
             blob=base64.b64decode(original['content'],validate=True)
             if original.get('digest') and hashlib.sha256(blob).hexdigest()!=original['digest']:raise ValueError('보관된 원본 파일의 무결성이 맞지 않습니다.')

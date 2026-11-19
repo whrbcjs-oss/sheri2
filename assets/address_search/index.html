@@ -1,0 +1,26 @@
+<!doctype html><html lang="ko"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font:14px sans-serif;margin:0;color:#163c30}button{background:#fff;border:1px solid #168351;border-radius:7px;color:#086441;padding:8px 20px;cursor:pointer;font-weight:bold}#postcode{margin-top:8px}#status{font-size:12px;color:#63776b;margin-left:8px}</style><button id="open">⌕ 주소검색</button><span id="status">도로명·지번 검색</span><div id="postcode"></div><script>
+const send=(type,extra={})=>parent.postMessage({isStreamlitMessage:true,type,...extra},'*');
+const frame=h=>send('streamlit:setFrameHeight',{height:h});
+let loaded=false;
+function launch(){
+ const el=document.getElementById('postcode');el.innerHTML='';frame(43);
+ new daum.Postcode({oncomplete:data=>{
+   send('streamlit:setComponentValue',{value:{zonecode:data.zonecode,address:data.roadAddress||data.jibunAddress,nonce:Date.now()},dataType:'json'});
+   el.innerHTML='';frame(43);
+ },width:500,height:600}).open({popupTitle:'주소 검색'});
+}
+function loadProvider(){
+ if(loaded)return;loaded=true;
+ const script=document.createElement('script');script.src='https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+ script.onload=()=>{document.getElementById('status').textContent='도로명·지번 검색';};
+ script.onerror=()=>{loaded=false;document.getElementById('status').textContent='연결 실패: 주소 직접 입력 가능';frame(60);};
+ document.head.appendChild(script);
+}
+document.getElementById('open').onclick=()=>{
+ if(window.daum&&daum.Postcode){launch();return;}
+ document.getElementById('status').textContent='불러오는 중… 잠시 후 다시 눌러주세요.';loadProvider();frame(60);
+};
+loadProvider();
+window.addEventListener('message',e=>{if(e.data.type==='streamlit:render')frame(document.getElementById('postcode').childNodes.length?510:43);});
+send('streamlit:componentReady',{apiVersion:1});frame(43);
+</script></html>

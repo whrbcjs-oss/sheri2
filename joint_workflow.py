@@ -7,9 +7,7 @@ import collaboration as shared
 SELECTIONS=['receipts','fees','claims','subcontracts','recoveries']
 
 def install(c):
-    needs_close=not c.execute("SELECT 1 FROM sqlite_master WHERE name='jv_closes'").fetchone()
-    needs_roles=not c.execute("SELECT 1 FROM sqlite_master WHERE name='jv_project_roles'").fetchone()
-    if (needs_close or needs_roles) and c.execute('SELECT 1 FROM jv_companies LIMIT 1').fetchone():shared.backup_database(c.path)
+    if not c.execute("SELECT 1 FROM sqlite_master WHERE name='jv_closes'").fetchone() and c.execute('SELECT 1 FROM jv_companies LIMIT 1').fetchone():shared.backup_database(c.path)
     c.executescript('''
     CREATE TABLE IF NOT EXISTS jv_sources(batch_id INTEGER PRIMARY KEY REFERENCES jv_batches(id),content TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS jv_fee_groups(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES jv_projects(id),member_id INTEGER NOT NULL REFERENCES jv_members(id),label TEXT NOT NULL,receipt_ids TEXT NOT NULL,calculations TEXT NOT NULL);
@@ -18,7 +16,6 @@ def install(c):
     CREATE TABLE IF NOT EXISTS jv_runs(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES jv_projects(id),member_id INTEGER NOT NULL REFERENCES jv_members(id),name TEXT NOT NULL,selection TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS jv_closes(project_id INTEGER NOT NULL REFERENCES jv_projects(id),month TEXT NOT NULL,closed INTEGER NOT NULL DEFAULT 0,closed_by TEXT NOT NULL,closed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,snapshot TEXT NOT NULL,PRIMARY KEY(project_id,month));
     CREATE TABLE IF NOT EXISTS jv_close_history(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL,month TEXT NOT NULL,action TEXT NOT NULL,actor TEXT NOT NULL,reason TEXT NOT NULL,at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,snapshot TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS jv_project_roles(project_id INTEGER PRIMARY KEY REFERENCES jv_projects(id),role TEXT NOT NULL CHECK(role IN ('주관사','비주관사')));
     ''')
 
 def is_closed(c,p,month):
@@ -31,33 +28,8 @@ def ensure_open(c,p,start,end=None):
 def runs(c,p,m):return db.rows(c,'SELECT * FROM jv_runs WHERE project_id=? AND member_id=? ORDER BY id DESC',(p,m))
 def groups(c,p,m):return db.rows(c,'SELECT * FROM jv_fee_groups WHERE project_id=? AND member_id=? ORDER BY id',(p,m))
 
-def project_role(c,p):
-    row=c.execute('SELECT role FROM jv_project_roles WHERE project_id=?',(p,)).fetchone()
-    if row and row[0] in ['주관사','비주관사']:return row[0]
-    # Preserve an older role column if a previous operating version had one.
-    project=next((x for x in db.projects(c) if x['id']==p),{})
-    for key in ['our_role','project_role','lead_role','role','management_role']:
-        value=str(project.get(key,'')).strip()
-        if '비주관' in value:return '비주관사'
-        if value=='주관사' or ('주관' in value and '비주관' not in value):return '주관사'
-    return '주관사'
-
-def save_project_role(c,p,role):
-    if role not in ['주관사','비주관사']:raise ValueError('당사 공동도급 역할을 확인하세요.')
-    if not c.execute('SELECT 1 FROM jv_projects WHERE id=?',(p,)).fetchone():raise ValueError('프로젝트를 확인하세요.')
-    with c:c.execute('INSERT INTO jv_project_roles(project_id,role) VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET role=excluded.role',(p,role))
-
-def latest_closed_letter(c,p,m):
-    """Return the newest frozen monthly settlement for a member, if one exists."""
-    rows=db.rows(c,'SELECT month,snapshot FROM jv_closes WHERE project_id=? AND closed=1 ORDER BY month DESC',(p,))
-    for row in rows:
-        try:data=json.loads(row['snapshot'])['letters'][str(m)]
-        except (KeyError,TypeError,ValueError,json.JSONDecodeError):continue
-        return row['month'],data
-    return None
-
 def source_entries(c,p,m,kind):
-    return [dict(e,data=json.loads(e['payload'])) for e in db.entries(c,p,m,kind)]
+    return [dict(e,data=db.entry_payload(e)) for e in db.entries(c,p,m,kind)]
 
 def used(c,p,m,key,exclude=None):
     ids={}
@@ -70,8 +42,8 @@ def ensure_entry_editable(c,p,m,id):
     e=c.execute('SELECT kind,period_start,period_end,entry_date FROM jv_entries WHERE id=? AND project_id=? AND member_id=?',(id,p,m)).fetchone()
     if not e:raise ValueError('수정할 내역이 없습니다.')
     start,end=(e[3][:7],e[3][:7]) if e[0] in ['receipt','subcontract'] else (e[1],e[2])
-    ensure_open(c,p,start,end);key={'receipt':'receipts','subcontract':'subcontracts','recovery':'recoveries'}.get(e[0])
-    if key and id in used(c,p,m,key):raise ValueError('정산 건에 포함된 내역입니다. 해당 정산의 선택을 해제한 뒤 수정하세요.')
+    ensure_open(c,p,start,end);key={'receipt':'receipts','subcontract':'subcontracts','recovery':'recoveries','allocation_receipt':'claims'}.get(e[0])
+    if key and (-id if e[0]=='allocation_receipt' else id) in used(c,p,m,key):raise ValueError('정산 건에 포함된 내역입니다. 해당 정산의 선택을 해제한 뒤 수정하세요.')
     if e[0]=='receipt' and any(id in json.loads(g['receipt_ids']) for g in groups(c,p,m)):raise ValueError('관리비·보험료 정산에 연결된 수령 내역입니다. 관리비 정산의 연결을 해제하거나 삭제한 뒤 수정하세요.')
     if e[0]=='progress':raise ValueError('이전 버전 자료입니다. 자동 이전된 공사대금과 관리비 정산에서 수정하세요.')
 
@@ -149,12 +121,16 @@ def migrate(c):
             c.execute('INSERT INTO jv_legacy_done VALUES(?)',(e['id'],))
 
 def claim_rows(c,p,m):
+    from joint_store import is_nonlead
+    if is_nonlead(c,p):
+        return [dict(id=-e['id'],month=e['period_start'],account=e['data'].get('label',''),description='',base=e['data']['supply'],vat=e['data']['vat'],invested=str(sum((db.num(e['data'][k]) for k in ['asset','sub_input','own_input']),db.num(0)))) for e in source_entries(c,p,m,'allocation_receipt')]
     all_al=db.allocations(c,p,'2000-01','2100-12');raw={e['id']:e for e in db.ledger(c,p)};member=next(x for x in db.members(c,p) if x['id']==m);owner=next(x for x in db.projects(c) if x['id']==p)['owner_id']
     return [dict(id=x['ledger_id'],month=x['allocation_month'],account=x['account'],description=x['description'],base=x['base'],vat=x['vat'],invested=str(db.num(raw[x['ledger_id']]['tax_supply'])+db.num(raw[x['ledger_id']]['invoice'])+db.num(raw[x['ledger_id']]['receipt'])) if member['company_id']!=owner and raw[x['ledger_id']]['company_id']==member['company_id'] else '0') for x in all_al if x['member_id']==m]
 
 def selected_settlement(c,p,m,selection):
     if m not in [x['id'] for x in db.members(c,p)]:raise ValueError('해당 프로젝트에 등록된 회원사를 선택하세요.')
-    sel={k:list(map(int,selection.get(k,[]))) for k in SELECTIONS}
+    member=next(x for x in db.members(c,p) if x['id']==m)
+    sel={k:list(map(int,selection.get(k,[]))) if k!='fees' or member['fee_enabled'] else [] for k in SELECTIONS}
     for k,v in sel.items():
         if len(v)!=len(set(v)):raise ValueError('선택 내역이 중복되었습니다.')
     receipts={e['id']:e for e in source_entries(c,p,m,'receipt')};gs={g['id']:g for g in groups(c,p,m)}
@@ -188,7 +164,15 @@ def selected_settlement(c,p,m,selection):
     claim_ids=set(sel['claims'])
     raw=[x for x in db.ledger(c,p) if x['id'] in claim_ids];al=[x for x in db.allocations(c,p,'2000-01','2100-12') if x['ledger_id'] in claim_ids]
     d=db.assemble(c,p,m,raw,al,chosen,receipts=receipt_list,claim_only=True)
-    d.update(selection=sel,selection_mode=True,receipt_entries=sorted(receipt_list,key=lambda x:(x['entry_date'],x['id'])),management_entries=management,deduction_entries=deduction_entries,warnings=warnings)
+    from joint_store import is_nonlead
+    if is_nonlead(c,p):
+        chosen_claims=[claims[i] for i in sel['claims']]
+        totals={k:sum((db.num(x[k]) for x in chosen_claims),db.num(0)) for k in ['base','vat','invested']}
+        a=d['amounts'];a.update({k:str(v) for k,v in totals.items()})
+        a['claim']=str(totals['base']+totals['vat']-totals['invested']+db.num(a['subcontract'])+db.num(a['subcontract_vat']))
+        a['remaining']=str(db.num(a['received'])-db.num(a['deductions'])+totals['vat']+db.num(a['subcontract_vat'])-db.num(a['recovery'])-totals['invested'] if member['fee_enabled'] else db.num(a['claim'])-db.num(a['recovery']))
+        d.update(nonlead=True,direct_claims=chosen_claims)
+    d.update(simultaneous_subcontracts=True,selection=sel,selection_mode=True,receipt_entries=sorted(receipt_list,key=lambda x:(x['entry_date'],x['id'])),management_entries=management,deduction_entries=deduction_entries,warnings=warnings)
     return d
 
 def save_run(c,p,m,name,selection,id=None):
@@ -209,18 +193,40 @@ def month_letter(c,p,m,month):
     month=db.period(month);raw=[x for x in db.ledger(c,p) if x['allocation_month']==month];al=db.allocations(c,p,month,month)
     opening=source_entries(c,p,m,'opening')
     if any(e['period_start']<=month<=e['period_end'] and (e['period_start']!=month or e['period_end']!=month) for e in opening):raise ValueError('이전 버전의 전월 미수·이자가 여러 달에 걸쳐 있습니다. 해당 내역을 선택해 배분연월 하나로 수정한 뒤 마감하세요.')
-    # Each monthly input is an additional outstanding amount.  The official
-    # letter must therefore show the accumulated balance through the selected
-    # month, not only the row entered for that month.
-    selected=[e for e in opening if e['period_end']<=month]
+    # 전월 미수액은 선택 월까지 등록한 금액의 누계이고, 지연이자는 기존처럼
+    # 선택 월 입력분만 반영한다. 원본 입력행은 변경하지 않고 계산용 사본만 만든다.
+    selected=[]
+    for e in opening:
+        if e['period_end']>month:continue
+        item=dict(e,data=dict(e['data']))
+        if e['period_end']<month:item['data']['interest']='0'
+        selected.append(item)
     pending=sum(not c.execute('SELECT 1 FROM jv_allocations WHERE ledger_id=?',(r['id'],)).fetchone() for r in raw)
     result=db.assemble(c,p,m,raw,al,selected,month,month,pending,claim_only=True)
-    # assemble() normally scopes party-level manual rows to the report period.
-    # A monthly letter uses cumulative opening balances for every participant.
-    for party,member in zip(result['parties'],db.members(c,p)):
-        entries=[e for e in source_entries(c,p,member['id'],'opening') if e['period_end']<=month]
-        party['arrears']=str(sum((db.num(e['data'].get('arrears')) for e in entries),Decimal(0)))
-        party['interest']=str(sum((db.num(e['data'].get('interest')) for e in entries),Decimal(0)))
+    return refresh_letter_opening(c,p,m,month,result)
+
+def refresh_letter_opening(c,p,m,month,data):
+    """Apply cumulative arrears to both live and already-closed letters.
+
+    Closed packages created by older versions stored only the selected month's
+    arrears.  Keep their closed ledger figures immutable, but refresh these two
+    input-derived letter fields at print time.
+    """
+    month=db.period(month)
+    result=dict(data,amounts=dict(data.get('amounts',{})),parties=[dict(row) for row in data.get('parties',[])])
+    members=result.get('members') or db.members(c,p)
+    by_name={party.get('name'):party for party in result['parties']}
+    selected_arrears=selected_interest=Decimal(0)
+    for member in members:
+        entries=source_entries(c,p,member['id'],'opening')
+        arrears=sum((db.num(e['data'].get('arrears')) for e in entries if e['period_end']<=month),Decimal(0))
+        interest=sum((db.num(e['data'].get('interest')) for e in entries if e['period_start']==month and e['period_end']==month),Decimal(0))
+        party=by_name.get(member['name'])
+        if party:party.update(arrears=str(arrears),interest=str(interest))
+        if member['id']==m:selected_arrears,selected_interest=arrears,interest
+    result['amounts']['arrears']=str(selected_arrears)
+    result['amounts']['interest']=str(selected_interest)
+    result['amounts']['letter_claim']=str(db.num(result['amounts'].get('base'))+db.num(result['amounts'].get('vat'))-db.num(result['amounts'].get('invested'))+selected_arrears+selected_interest)
     return result
 
 def close_month(c,p,month,token):
@@ -245,10 +251,11 @@ def close_month(c,p,month,token):
     for r in raw:
         for k in BUCKETS:
             if sum((pieces[(a['ledger_id'],a['member_id'])][k] for a in by_ledger.get(r['id'],[])),Decimal(0))!=db.num(r[k]):raise ValueError('증빙별 배분 합계가 원장과 일치하지 않습니다.')
-    originals=db.rows(c,'SELECT b.id,b.name,b.digest,s.content FROM jv_batches b JOIN jv_sources s ON s.batch_id=b.id WHERE b.id IN (SELECT DISTINCT batch_id FROM jv_ledger WHERE project_id=? AND allocation_month=?)',(p,month))
+    originals=db.rows(c,'SELECT b.id,b.name,b.digest,s.content FROM jv_batches b JOIN jv_sources s ON s.batch_id=b.id WHERE b.id IN (SELECT DISTINCT batch_id FROM jv_ledger l WHERE project_id=? AND allocation_month=? AND NOT EXISTS(SELECT 1 FROM jv_ledger_deleted d WHERE d.ledger_id=l.id))',(p,month))
     from joint_allocation import details
     prior=[r for r in db.ledger(c,p) if r['allocation_month']<month]
-    package=dict(prior_ledger=prior,allocation_details=details(c,p,month),month=month,project=next(x for x in db.projects(c) if x['id']==p),ledger=raw,allocations=al,letters=letters,originals=originals)
+    from joint_month_shares import record as share_record
+    package=dict(month_shares=share_record(c,p,month),prior_ledger=prior,allocation_details=details(c,p,month),month=month,project=next(x for x in db.projects(c) if x['id']==p),ledger=raw,allocations=al,letters=letters,originals=originals)
     text=json.dumps(package,ensure_ascii=False)
     with c:
         c.execute('INSERT INTO jv_closes(project_id,month,closed,closed_by,snapshot) VALUES(?,?,1,?,?) ON CONFLICT(project_id,month) DO UPDATE SET closed=1,closed_by=excluded.closed_by,closed_at=CURRENT_TIMESTAMP,snapshot=excluded.snapshot',(p,month,user['username'],text))
@@ -271,5 +278,6 @@ def closed_package(c,p,month):
 
 def delete_run(c,p,m,id):
     if not c.execute('SELECT 1 FROM jv_runs WHERE id=? AND project_id=? AND member_id=?',(id,p,m)).fetchone():raise ValueError('삭제할 정산 건을 확인하세요.')
+    if c.execute('SELECT 1 FROM jv_status_records WHERE run_id=? LIMIT 1',(id,)).fetchone():raise ValueError('현황 또는 현황 이력이 연결된 정산 건입니다. 연결 기록 보존을 위해 정산 건을 삭제할 수 없습니다.')
     # Only removes the selection links. Input rows and previously issued documents stay.
     with c:c.execute('DELETE FROM jv_runs WHERE id=? AND project_id=? AND member_id=?',(id,p,m))

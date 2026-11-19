@@ -14,7 +14,9 @@ LABELS={8:'공사수입',9:'김제공장',10:'입금 계 ①',11:'급여 등',12
         15:'건강.연금',16:'고용.산재',17:'미불',19:'수시',20:'공과금',21:'카드대금',
         22:'이자비용',23:'지출 계 ②',24:'수입·지출 차액 ①−②',25:'관리비',26:'관리비차감후'}
 EXPENSE=[11,12,13,15,16,17,19,20,21,22]
+INCOME_INSURANCE_NOTE='공사수입 고용산재공제'
 HEADERS={'date':['날짜','거래일자'],'inflow':['차변','입금'],'outflow':['대변','출금'],
+         'settlement_month':['정산월','정산연월'],
          'department':['대분류'],'category':['중분류'],'vat':['VAT','부가세'],
          'corporation':['법인'],'project':['프로젝트명','프로젝트명2'],'vendor':['거래처명'],
          'description':['품의내역명','적요란','적요'],'note':['비고']}
@@ -194,6 +196,35 @@ def parse_date(value,epoch):
     raise ValueError('날짜 형식을 확인하세요: '+str(value))
 
 
+def parse_settlement_month(value,posting,epoch):
+    """Return the accounting period independently from the voucher date.
+
+    Older workbooks do not have a settlement-month column, so their posting
+    month remains the period.  New workbooks may use YYYY-MM, YYYYMM, an Excel
+    date, or a month number (the posting year is used for the latter).
+    """
+    if value is None or str(value).strip()=='':return posting.year,posting.month,True
+    if isinstance(value,(datetime,date)):
+        period=value.date() if isinstance(value,datetime) else value
+        return period.year,period.month,False
+    if isinstance(value,(int,float,Decimal)):
+        number=Decimal(str(value))
+        if number==number.to_integral_value() and 1<=number<=12:
+            return posting.year,int(number),False
+        if 30000<number<80000:
+            period=openpyxl.utils.datetime.from_excel(float(number),epoch).date()
+            return period.year,period.month,False
+    text=str(value).strip()
+    if re.fullmatch(r'\d{1,2}',text):
+        month=int(text)
+        if 1<=month<=12:return posting.year,month,False
+    compact=re.sub(r'[^0-9]','',text)
+    if len(compact)>=6:
+        year,month=int(compact[:4]),int(compact[4:6])
+        if 2000<=year<=2100 and 1<=month<=12:return year,month,False
+    raise ValueError('정산월 형식을 확인하세요(예: 2026-10): '+text)
+
+
 def read_ledger(path):
     path=Path(path);book=openpyxl.load_workbook(path,data_only=False)
     cached=openpyxl.load_workbook(path,data_only=True)
@@ -207,7 +238,7 @@ def read_ledger(path):
                 if selected is not None:raise ValueError('원장 형식의 시트가 여러 개입니다. 보통예금_원장 이름으로 저장해 주세요.')
                 selected=(sheet,row[0].row,mapping);break
     if selected is None:raise ValueError('날짜, 차변/입금, 대변/출금, 대분류, 중분류, VAT 열이 있는 보통예금 원장이 필요합니다.')
-    sheet,header,mapping=selected;calc=LedgerValueReader(book,cached);records=[]
+    sheet,header,mapping=selected;calc=LedgerValueReader(book,cached);records=[];fallback_count=0
     for r in range(header+1,sheet.max_row+1):
         def value(key):
             column=mapping.get(key)
@@ -228,7 +259,10 @@ def read_ledger(path):
         try:
             posting=parse_date(raw_date,book.epoch)
             if not 2000<=posting.year<=2100:raise ValueError('지원 범위를 벗어난 거래 연도입니다.')
-            entry={'row':r,'date':posting.isoformat(),'year':posting.year,'month':posting.month}
+            settlement_year,settlement_month,fallback=parse_settlement_month(value('settlement_month'),posting,book.epoch)
+            fallback_count+=int(fallback)
+            entry={'row':r,'date':posting.isoformat(),'year':settlement_year,'month':settlement_month,
+                   'settlement_month':f'{settlement_year:04d}-{settlement_month:02d}'}
             for key in ['inflow','outflow','vat']:entry[key]=str(amount(key))
             for key in ['department','category','corporation','project','vendor','description','note']:
                 entry[key]=str(value(key) or '').strip()
@@ -237,6 +271,7 @@ def read_ledger(path):
     if not records:raise ValueError('읽을 수 있는 거래가 없습니다.')
     return {'source':path.name,'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
             'sheet':sheet.title,'records':records,'cached_formula_count':len(calc.cached_cells),'native_formula_count':len(calc.native_cells),
+            'settlement_month_fallback_count':fallback_count,
             'calculation_mode':getattr(book.calculation,'calcMode',None),
             'periods':sorted({(r['year'],r['month']) for r in records})}
 
@@ -251,10 +286,21 @@ def build_report(year,records,imports,settings,adjustments):
         for row in [8,9]+EXPENSE:
             category='공사수입' if row==8 else '제품매출' if row==9 else LABELS[row]
             group=[r for r in selected if r['month']==month and r['category']==category]
-            gross=sum((money(r['inflow'] if row in (8,9) else r['outflow']) for r in group),Decimal(0))
+            note_group=[r for r in selected if row==8 and r['month']==month and INCOME_INSURANCE_NOTE in str(r.get('note') or '')]
+            debit=sum((money(r['inflow']) for r in group),Decimal(0))
+            credit=sum((money(r['outflow']) for r in group),Decimal(0))
             vat=sum((money(r['vat']) for r in group),Decimal(0))
-            matrix[row][month-1]=gross-vat
-            breakdowns.append({'report_row':row,'month':month,'gross':float(gross),'vat':float(vat),'count':len(group)})
+            # Income rows follow the bank-ledger inflow direction. Expense
+            # middle categories use the requested net formula:
+            # credit total - debit total - VAT total.
+            note_credit=sum((money(r['outflow']) for r in note_group),Decimal(0))
+            net=((debit-credit-vat)+note_credit) if row==8 else (debit-credit-vat) if row==9 else (credit-debit-vat)
+            matrix[row][month-1]=net
+            breakdowns.append({'report_row':row,'month':month,'gross':float(debit if row in (8,9) else credit),
+                               'debit':float(debit),'credit':float(credit),'net':float(net),
+                               'vat':float(vat),'note_credit':float(note_credit),
+                               'note_credit_count':len(note_group),
+                               'count':len({r['row'] for r in group+note_group})})
         for item in adjustments:
             if item['month']==month:
                 amount=money(item['amount']);row=item['report_row'];matrix[row][month-1]+=amount
@@ -275,11 +321,20 @@ def build_report(year,records,imports,settings,adjustments):
            'values':[float(v) for v in matrix[r]]+[float(sum(matrix[r],Decimal(0)))],
            'note':notes.get(r,''),'subnotes':[]} for r in LABELS]
     refunds=[{**r,**{k:float(money(r[k])) for k in ['inflow','outflow','vat']}} for r in selected if '환수' in r['category']]
+    ledger_rows=[]
+    for r in selected:
+        debit,credit,vat=(money(r[k]) for k in ['inflow','outflow','vat'])
+        main=max(abs(debit),abs(credit))
+        ledger_rows.append({**r,'settlement_month':f'{year:04d}-{r["month"]:02d}',
+                            'inflow':float(debit),'outflow':float(credit),'vat':float(vat),
+                            'income_insurance_note':INCOME_INSURANCE_NOTE in str(r.get('note') or ''),
+                            'vat_review':bool(main and abs(vat)>main/Decimal(2))})
     return {'validation_mode':'ledger','source':f'{year}년 월별 업로드 원장 ({len(months)}개월)',
             'sheet':'보통예금_원장 → 자동 생성','period_start':min(r['date'] for r in records),
             'period_end':max(r['date'] for r in records),'months':months,'year':year,'management_rate':float(money(rate)),
             'ledger_count':len(records),'selected_count':len(selected),'month_counts':dict(Counter(r['month'] for r in selected)),
             'rows':rows,'breakdowns':breakdowns,'checks':[], 'adjustments':applied,'refunds':refunds,
+            'ledger_rows':ledger_rows,'income_insurance_note':INCOME_INSURANCE_NOTE,
             'refund_total':sum(r['inflow'] for r in refunds),'vat_scope_impact':0,
             'opening':float(opening),'opening_confirmed':bool(settings['opening_confirmed']),
             'closing':float(opening+sum(matrix[26],Decimal(0))) if settings['opening_confirmed'] else None,

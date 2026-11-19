@@ -21,6 +21,12 @@ def money_input(label,value='0',key=None,where=None):
     if key is None:raise ValueError('금액 입력 키가 필요합니다.')
     return (where or st).text_input(label,formatted(value),key=key,on_change=_format_input,args=(key,))
 
+
+def total_input(label,value,key,where=None,help=None):
+    """Show a derived amount at the same baseline as its input fields."""
+    st.session_state[key]=formatted(value)
+    return (where or st).text_input(label,key=key,disabled=True,help=help)
+
 def frame(records,currency,row_sum=(),footer=True):
     data=records.to_dict('records') if isinstance(records,pd.DataFrame) else [dict(x) for x in records]
     if not data:return pd.DataFrame()

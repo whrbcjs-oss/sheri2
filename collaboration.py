@@ -37,8 +37,8 @@ def security_db():
 
 
 def password_hash(password):
-    if len(password) < 12:
-        raise ValueError('비밀번호는 12자 이상 입력하세요.')
+    if len(password) < 8:
+        raise ValueError('비밀번호는 8자 이상 입력하세요.')
     salt = secrets.token_hex(16)
     digest = hashlib.pbkdf2_hmac('sha256', password.encode(), bytes.fromhex(salt), 600000)
     return salt + ':' + digest.hex()
@@ -324,7 +324,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     username = input('관리자 아이디: ').strip()
     name = input('사용자 이름: ').strip()
-    password = getpass('비밀번호 (12자 이상): ')
+    password = getpass('비밀번호 (8자 이상): ')
     if password != getpass('비밀번호 확인: '):
         raise SystemExit('비밀번호가 일치하지 않습니다.')
     create_user(None, username, name, password, bootstrap=True)

@@ -23,7 +23,8 @@ def legacy_source(source):
     selector='system = st.radio("프로그램 선택", ["자체결산 보고", "엘비데크 월별보고"], key="main_system")'
     if source.count(selector)!=1:
         raise ValueError('기존 프로그램의 메뉴 형식이 지원 버전과 다릅니다. app.py 원본을 보존하고 확인이 필요합니다.')
-    return source.replace(selector,'system = st.session_state.get("main_system", "자체결산 보고")',1)
+    from app_branding import without_sidebar_program_titles
+    return without_sidebar_program_titles(source.replace(selector,'system = st.session_state.get("main_system", "자체결산 보고")',1))
 
 
 def analyze_upload(blob,name,year=None):
@@ -41,7 +42,7 @@ def report_view(report,embedded=True):
 
 def upload_page(c,year,user):
     st.subheader(f'{year}년 월별 원장 업로드')
-    st.caption('원장 읽기·화면 버전: 2026.10.30.4')
+    st.caption('원장 읽기·화면 버전: 2026.11.10.6')
     existing=store.imports(c)
     counts=c.execute("SELECT COUNT(*),COALESCE(SUM(CASE WHEN department='데크거더' THEN 1 ELSE 0 END),0) FROM monthly_ledger").fetchone()
     cards=st.columns(4)
@@ -56,8 +57,8 @@ def upload_page(c,year,user):
     if not user['admin']:
         st.info('원장 파일 교체 업로드는 관리자만 실행합니다. 보고서·원장 조회와 이월액·보험료 조정은 모든 사용자가 사용할 수 있습니다.')
         return
-    st.info('보통예금_원장 시트만 있는 엑셀을 업로드하세요. 보고서 시트는 필요하지 않습니다.')
-    st.markdown('<div class="lb-upload-tip">해당 월의 보통예금 원장을 선택하면 자동으로 읽습니다. 선택한 월만 저장·교체하며, 다른 달과 이월액·조정액은 유지합니다.</div>',unsafe_allow_html=True)
+    st.info('보통예금_원장 시트의 정산월을 기준으로 월별보고를 구성합니다. 기표일자는 원래 전표일자로 보존됩니다.')
+    st.markdown('<div class="lb-upload-tip">정산 완료 후 늦게 입력한 전표는 반영할 달을 정산월(예: 2026-11)로 입력하세요. 선택한 정산월만 저장·교체하며, 다른 달과 이월액·조정액은 유지합니다.</div>',unsafe_allow_html=True)
     uploaded=st.file_uploader('월별 보통예금 원장 엑셀',type=['xlsx'],key='lb_upload_file')
     if uploaded:
         blob=uploaded.getvalue();digest=hashlib.sha256(blob).hexdigest()
@@ -77,13 +78,16 @@ def upload_page(c,year,user):
         st.caption(f"SEARCH·IF 등 문자 분류 수식 {data['native_formula_count']:,}개 셀을 직접 계산했습니다.")
     if data.get('cached_formula_count'):
         st.caption(f"엑셀에 저장된 수식 계산 결과 {data['cached_formula_count']:,}개 셀을 사용했습니다. 원본 수식을 바꾼 경우 Excel에서 전체 계산 후 저장한 파일을 올려 주세요.")
+    if data.get('settlement_month_fallback_count'):
+        st.warning(f"정산월이 비어 있거나 열이 없는 {data['settlement_month_fallback_count']:,}건은 기표일자의 연월로 반영됩니다.")
     months=sorted({r['month'] for r in data['records'] if r['year']==year},reverse=True)
     if not months:
         st.warning(f'파일에 {year}년 거래가 없습니다. 왼쪽 월별보고 회계연도를 변경하세요.');return
-    month=st.selectbox('저장할 월',months,format_func=lambda m:f'{year}년 {m}월',key='lb_import_month_'+upload['digest'])
+    month=st.selectbox('저장할 정산월',months,format_func=lambda m:f'{year}년 {m}월',key='lb_import_month_'+upload['digest'])
     selected=[r for r in data['records'] if r['year']==year and r['month']==month]
     deck=[r for r in selected if r['department']=='데크거더']
-    a,b=st.columns(2);a.metric('선택 월 전체 원장',f'{len(selected):,}건');b.metric('데크거더 집계 대상',f'{len(deck):,}건')
+    late=[r for r in selected if r['date'][:7]!=r['settlement_month']]
+    a,b,d=st.columns(3);a.metric('선택 정산월 전체 원장',f'{len(selected):,}건');b.metric('데크거더 집계 대상',f'{len(deck):,}건');d.metric('기표월과 다른 전표',f'{len(late):,}건')
     st.caption(f"{data['source']} · {min(r['date'] for r in selected)} ~ {max(r['date'] for r in selected)}")
     if not deck:st.warning('이 달에는 대분류가 데크거더인 거래가 없습니다. 분류가 입력된 원장인지 확인하세요.')
     st.dataframe(selected[:30],hide_index=True,use_container_width=True)
@@ -96,7 +100,7 @@ def upload_page(c,year,user):
             store.save_month(c,year,month,data,upload['blob'],st.session_state['_auth_token'])
             st.session_state.pop('_lb_upload',None)
             st.session_state['_lb_next_page']='통장입출금기준 현황'
-            st.session_state['_lb_success']=f'{year}년 {month}월 원장을 저장했습니다. 다른 달은 유지했습니다.'
+            st.session_state['_lb_success']=f'{year}년 {month}월 정산 원장을 저장했습니다. 다른 정산월은 유지했습니다.'
             st.rerun()
         except (ValueError,PermissionError,sqlite3.Error,OSError) as e:st.error('저장하지 못했습니다: '+str(e))
 
@@ -106,8 +110,9 @@ def settings_page(c,year):
     st.caption('원장에 없는 값만 별도로 입력합니다. 변경한 계정과 금액은 수정 이력에 기록됩니다.')
     current=store.settings(c)
     with st.form('lb_settings'):
-        opening=st.text_input('전년 이월 정산액(원) · 미확인이면 빈칸',value=current['opening_amount'] if current['opening_confirmed'] else '')
-        rate=st.text_input('관리비율(%)',value=current['management_rate'])
+        settings=st.columns(2)
+        opening=settings[0].text_input('전년 이월 정산액(원) · 미확인이면 빈칸',value=current['opening_amount'] if current['opening_confirmed'] else '')
+        rate=settings[1].text_input('관리비율(%)',value=current['management_rate'])
         submit=st.form_submit_button('이월액·관리비율 저장')
     if submit:
         try:store.save_settings(c,year,opening,rate);st.success('저장했습니다.')
@@ -119,8 +124,9 @@ def settings_page(c,year):
     previous=c.execute('SELECT amount,reason FROM monthly_adjustments WHERE month=? AND report_row=8',(month,)).fetchone()
     with st.form('lb_insurance_'+str(month)):
         st.write('원청 공제 고용·산재 보전액: 공사수입과 고용·산재 지출에 같은 금액을 가산합니다.')
-        amount=st.text_input('원장외 보험료 보전액(원)',value=previous[0] if previous else '0')
-        reason=st.text_input('조정 사유·근거',value=previous[1] if previous else '')
+        adjustment=st.columns(2)
+        amount=adjustment[0].text_input('원장외 보험료 보전액(원)',value=previous[0] if previous else '0')
+        reason=adjustment[1].text_input('조정 사유·근거',value=previous[1] if previous else '')
         submit=st.form_submit_button('보험료 조정 저장')
     if submit:
         try:store.save_insurance(c,year,month,amount,reason);st.success('조정을 저장했습니다.')
@@ -195,9 +201,8 @@ def backup_page(c,year,user):
 
 def render(user):
     css=Path(__file__).with_name('monthly_theme.css').read_text(encoding='utf-8')
-    st.markdown('<style>'+css+'</style>',unsafe_allow_html=True)
+    st.html('<style>'+css+'</style>')
     with st.sidebar:
-        st.subheader('엘비데크 월별보고')
         this_year=datetime.now(ZoneInfo('Asia/Seoul')).year
         years=sorted(set(store.available_years()+[this_year]),reverse=True)
         year=st.number_input('월별보고 회계연도',min_value=2000,max_value=2100,

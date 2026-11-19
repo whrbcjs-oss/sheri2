@@ -1,5 +1,6 @@
 """Account/evidence allocation matrix following the uploaded Excel layout."""
 from decimal import Decimal,ROUND_FLOOR
+from contextlib import nullcontext
 from html import escape
 import re
 import joint_store as db
@@ -20,13 +21,15 @@ def parts(amount,members,owner_id):
     amount=db.num(amount);out={m['id']:(amount*db.num(m['share'])/100).to_integral_value(rounding=ROUND_FLOOR) for m in members if m['company_id']!=owner_id}
     owner=next(m['id'] for m in members if m['company_id']==owner_id);out[owner]=amount-sum(out.values(),Decimal(0));return out
 
-def allocate(c,p,month=None,rebuild=False):
+def allocate(c,p,month=None,rebuild=False,transaction=True):
     import joint_workflow as flow
     raw=db.ledger(c,p);ms=db.members(c,p);project=next(x for x in db.projects(c) if x['id']==p)
     months=sorted({r['allocation_month'] for r in raw if month is None or r['allocation_month']==month})
     count=0
-    with c:
+    with (c if transaction else nullcontext()):
         for period in months:
+            from joint_month_shares import members as month_members
+            ms=month_members(c,p,period)
             if flow.is_closed(c,p,period):
                 if rebuild:flow.ensure_open(c,p,period)
                 continue
@@ -56,7 +59,7 @@ def allocate(c,p,month=None,rebuild=False):
                     count+=1
     return count
 
-def details(c,p,month):return db.rows(c,'SELECT d.* FROM jv_allocation_details d JOIN jv_ledger l ON l.id=d.ledger_id WHERE l.project_id=? AND l.allocation_month=?',(p,month))
+def details(c,p,month):return db.rows(c,'SELECT d.* FROM jv_allocation_details d JOIN jv_ledger l ON l.id=d.ledger_id WHERE l.project_id=? AND l.allocation_month=? AND NOT EXISTS(SELECT 1 FROM jv_ledger_deleted x WHERE x.ledger_id=l.id)',(p,month))
 
 def revise(c,p,ledger_id,changes):
     import joint_workflow as flow
@@ -93,7 +96,7 @@ def matrix_data(project,members,raw,allocations,prior=(),stored=(),prior_known=T
         for k in BUCKETS:v['current'][k]+=db.num(r[k])
     for r in prior:
         v=by_account.setdefault(account(r['account']),blank(account(r['account'])))
-        v['previous']+=sum((db.num(r[k]) for k in BUCKETS),Decimal(0))
+        v['previous']+=sum((db.num(r[k]) for k in BUCKETS[:3]),Decimal(0))
     lookup={r['id']:r for r in raw}
     for a in allocations:
         key=a['ledger_id'],a['member_id'];v=by_account[account(lookup[a['ledger_id']]['account'])];target=v['companies'][a['member_id']]
@@ -111,13 +114,15 @@ def matrix_data(project,members,raw,allocations,prior=(),stored=(),prior_known=T
     for section,names in SECTIONS:
         lines.append({'section':section})
         group=[by_account.get(name,blank(name)) for name in names]
+        if section.startswith('Ⅲ'):
+            # Unmapped ledger accounts remain individually named construction expenses.
+            # This changes report grouping only, never allocation amounts or source accounts.
+            group += [v for name,v in by_account.items() if name not in known]
         lines.extend(group)
         if section.startswith('Ⅳ'):assets=group
         else:expense.extend(group)
         if section.startswith('Ⅲ'):
             lines.append(dict(add('공사원가 계',expense),subtotal=True))
-            other=[v for name,v in by_account.items() if name not in known]
-            if other:lines.append({'section':'분류 확인 계정'});lines.extend(other)
     gross=add('공급가액 합계',list(by_account.values()));lines.append(dict(gross,subtotal=True))
     deduction=blank('공제액 (회원사투입)');owners={m['company_id']:m['id'] for m in members}
     for r in raw:
@@ -134,26 +139,57 @@ def matrix_data(project,members,raw,allocations,prior=(),stored=(),prior_known=T
     detail_keys={(d['ledger_id'],d['member_id']) for d in stored}
     return dict(project=project,members=members,lines=lines,prior_known=prior_known,unknown=bool(unknown),legacy=any((a['ledger_id'],a['member_id']) not in detail_keys for a in allocations))
 
-def render_matrix(data,month,printable=True):
+def selected_members(data,member_ids=None):
+    if member_ids is None:return data['members']
+    ids=list(member_ids);lookup={m['id']:m for m in data['members']}
+    if not ids or len(ids)!=len(set(ids)) or not set(ids)<=set(lookup):raise ValueError('중복 없이 해당 공사의 출력 회원사를 선택하세요.')
+    return [lookup[id] for id in ids]
+
+def line_values(data,line,ms,member_total=False):
+    cur=line['current'];supply=sum((cur[k] for k in BUCKETS[:3]),Decimal(0));gross=supply+cur['vat']
+    values=[line['label'],line['previous'] if data['prior_known'] else '미기록']+[cur[k] for k in BUCKETS[:3]]+[supply,cur['vat'],line['previous']+supply if data['prior_known'] else '미기록']
+    for m in ms:
+        part=line['companies'][m['id']]
+        values += (['확인 필요']*3 if line['unknown'] else [part[k] for k in BUCKETS[:3]])+[part['base'],part['vat']]
+        if member_total:values.append(part['base']+part['vat'])
+    # Always verify against ALL participants, even in a single-member projection.
+    valid=sum((line['companies'][m['id']]['base'] for m in data['members']),Decimal(0))==supply and sum((line['companies'][m['id']]['vat'] for m in data['members']),Decimal(0))==cur['vat']
+    values.append('확인 필요' if line['unknown'] else '' if valid else '미배분·확인')
+    return values
+
+MATRIX_CSS="""
+*{box-sizing:border-box}body{font:14px/1.4 "Malgun Gothic",sans-serif;color:#172d23;margin:20px;background:white}h1{text-align:center;font-size:25px;letter-spacing:3px}.heading{display:flex;justify-content:space-between;gap:12px;margin:12px 0}.scroll{overflow:auto}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{border:1px solid #bacbc1;padding:5px;text-align:center;white-space:nowrap}th{background:#edf5ef;font-weight:650}td.number{text-align:right}td.account{min-width:100px}.group-start{border-left:3px solid #176b44!important}.group-end{border-right:3px solid #176b44!important}.member-total{background:#fff7d6}.cost-total .member-total,.total .member-total{background:inherit}.section td{background:#e4f1e8;font-weight:bold;height:24px}.section .account{text-align:left;padding-left:10px}.subtotal{background:#edf5ef;font-weight:700}.subtotal td{border-top:2px solid #4e8062}.cost-total,.total{background:#0a7048;color:white;font-weight:700}.cost-total td{border-top:2px solid #176b44}.total td{border-top:2px solid #176b44}p{font-size:12px}button{padding:9px 16px;background:#087e4e;color:white;border:0;border-radius:4px;margin-bottom:10px}.member-print-block+.member-print-block{margin-top:30px;border-top:1px solid #b8cabe;padding-top:20px}@page{size:A3 landscape;margin:10mm}@media print{body{margin:0;font-size:9pt}button{display:none}.scroll{overflow:visible}table{min-width:0!important;font-size:8pt}th,td{padding:1.5px;line-height:1.2}td.account{min-width:0}.group-start{border-left-width:1.5pt!important}.group-end{border-right-width:1.5pt!important}tr{break-inside:avoid}thead{display:table-header-group}h1{font-size:17pt;margin:7px 0}.heading{margin:5px 0}.section td{height:auto}.section td,.subtotal,.cost-total,.total{print-color-adjust:exact;-webkit-print-color-adjust:exact}.member-print-block+.member-print-block{break-before:page;page-break-before:always;margin:0;border:0;padding:0}}
+"""
+
+def render_matrix(data,month,printable=True,member_ids=None,show_controls=True):
     from joint_report import money
-    esc=lambda s:escape(str(s));ms=data['members']
-    def cell(value):return '<td class="number">'+esc(money(value))+'</td>'
-    h='<h1>원 가 배 분 내 역 서</h1><div class="heading"><span>공사명 : '+esc(data['project']['name'])+'</span><span>배분연월 : '+esc(month)+' · 단위: 원</span></div>'
-    h+='<div class="scroll"><table id="allocation-matrix"><thead><tr><th rowspan="3">과 목</th><th colspan="8">공 사 원 가 (공급가액 + 부가세)</th>'+''.join('<th colspan="5">'+esc(m['name'])+'</th>' for m in ms)+'<th rowspan="3">비고·검산</th></tr><tr><th rowspan="2">전월까지</th><th colspan="4">당월 원가</th><th rowspan="2">VAT</th><th rowspan="2">합계금액<br>(당월+VAT)</th><th rowspan="2">누계</th>'+''.join('<th colspan="5">'+esc(m['share'])+'%</th>' for m in ms)+'</tr><tr>'
-    h+=''.join('<th>'+x+'</th>' for x in ['세금계산서','계산서','기타증빙','공급가액']+['세금계산서','계산서','기타','공급가액 계','VAT']*len(ms))+'</tr></thead><tbody>'
+    esc=lambda s:escape(str(s));ms=selected_members(data,member_ids);member_total=member_ids is not None;span=6 if member_total else 5
+    def cell(value,index):
+        group=index==1 or index==8+span*len(ms) or index>=8 and (index-8)%span==0
+        classes=('number ' if isinstance(value,(Decimal,int,float)) else '')+('group-start ' if group else '')+('member-total' if member_total and index>=8 and index<8+span*len(ms) and (index-8)%span==5 else '')
+        text=money(value) if isinstance(value,(Decimal,int,float)) else str(value)
+        return '<td'+(' class="'+classes.strip()+'"' if classes.strip() else '')+'>'+esc(text)+'</td>'
+    h='<h1>원 가 배 분 내 역 서</h1><div class="heading"><span>공사명 : '+esc(data['project']['name'])+'</span><span>'+('전체 출력' if member_ids is None else '회원사별 출력 · '+', '.join(m['name'] for m in ms))+' · 배분연월 : '+esc(month)+' · 단위: 원</span></div>'
+    h+='<div class="scroll"><table id="allocation-matrix" style="min-width:'+str(850+380*len(ms))+'px"><thead><tr><th rowspan="3" class="group-end">과 목</th><th colspan="7" class="group-start">공 사 원 가</th>'+''.join('<th colspan="'+str(span)+'" class="group-start">'+esc(m['name'])+'</th>' for m in ms)+'<th rowspan="3" class="group-start">비고</th></tr><tr><th rowspan="2" class="group-start">전월 공급가액 누계</th><th colspan="4">당월 원가</th><th rowspan="2">VAT</th><th rowspan="2">공급가액 누계</th>'+''.join('<th colspan="'+str(span)+'" class="group-start">'+esc(m['share'])+'%'+(' (계약 '+esc(m['contract_share'])+'%)' if m.get('contract_share') and db.num(m['share'])!=db.num(m['contract_share']) else '')+'</th>' for m in ms)+'</tr><tr>'
+    h+=''.join('<th>'+x+'</th>' for x in ['세금계산서','계산서','기타증빙','공급가액'])
+    for m in ms:h+=''.join('<th'+(' class="group-start"' if i==0 else '')+'>'+x+'</th>' for i,x in enumerate(['세금계산서','계산서','기타','공급가액 계','VAT']+(['합계금액'] if member_total else [])))
+    h+='</tr></thead><tbody>'
     for line in data['lines']:
-        if 'section' in line:h+='<tr class="section"><td colspan="'+str(10+5*len(ms))+'">'+esc(line['section'])+'</td></tr>';continue
-        cur=line['current'];supply=sum((cur[k] for k in BUCKETS[:3]),Decimal(0));gross=supply+cur['vat']
-        h+='<tr class="'+('total' if line.get('total') else 'subtotal' if line.get('subtotal') else '')+'"><td>'+esc(line['label'])+'</td>'
-        h+=(cell(line['previous']) if data['prior_known'] else '<td>미기록</td>')+''.join(cell(cur[k]) for k in BUCKETS[:3])+cell(supply)+cell(cur['vat'])+cell(gross)+(cell(line['previous']+gross) if data['prior_known'] else '<td>미기록</td>')
-        for m in ms:
-            part=line['companies'][m['id']]
-            h+=(''.join('<td>확인 필요</td>' for _ in range(3)) if line['unknown'] else ''.join(cell(part[k]) for k in BUCKETS[:3]))+cell(part['base'])+cell(part['vat'])
-        valid=sum((line['companies'][m['id']]['base'] for m in ms),Decimal(0))==supply and sum((line['companies'][m['id']]['vat'] for m in ms),Decimal(0))==cur['vat']
-        h+='<td>'+('확인 필요' if line['unknown'] else '정상' if valid else '미배분·확인')+'</td></tr>'
-    h+='</tbody></table></div><p>분류 확인 계정은 전체 공급가액에 포함하며 공사원가 계에는 중복 포함하지 않습니다.</p><p>합계금액은 당월 공급가액과 VAT의 합계입니다. 회사별 배분액을 다시 더하지 않습니다.</p>'
+        if 'section' in line:
+            h+='<tr class="section"><td class="account group-end">'+esc(line['section'])+'</td><td colspan="7" class="group-start"></td>'+''.join('<td colspan="'+str(span)+'" class="group-start"></td>' for m in ms)+'<td class="group-start"></td></tr>';continue
+        values=line_values(data,line,ms,member_total)
+        h+='<tr class="'+('total' if line.get('total') else 'subtotal cost-total' if line['label']=='공사원가 계' else 'subtotal' if line.get('subtotal') else '')+'"><td class="account group-end">'+esc(values[0])+'</td>'+''.join(cell(value,index) for index,value in enumerate(values[1:],1))+'</tr>'
+    h+='</tbody></table></div><p>분류 확인 계정은 경비에 포함하여 공사원가 계에 합산합니다. 자산은 별도 집계하며 전체 합계에 중복 가산하지 않습니다.</p>'
+    h+='<p>공급가액 누계는 전월 공급가액 누계 + 당월 공급가액이며 VAT를 제외합니다. 회원사 합계금액은 공급가액 계 + VAT입니다. 비고는 검산 불일치·확인 필요 시에만 표시합니다.</p>'
     if data.get('legacy'):h+='<p>기존 배분액을 보존한 자료입니다. 새 계산 기준은 미마감 월에서 정산 연결 확인 후 명시적으로 재배분할 수 있습니다.</p>'
     if data['unknown']:h+='<p>기존 혼합 증빙 배분은 금액을 보존했습니다. 증빙별 배분을 확인하거나 미마감 월에서 명시적으로 재배분하세요.</p>'
-    button='<button onclick="window.print()">인쇄 / PDF 저장</button>' if printable else '<button disabled>월 마감 후 출력</button>'
-    css='''*{box-sizing:border-box}body{font:14px/1.4 "Malgun Gothic",sans-serif;color:#111;margin:20px}h1{text-align:center;font-size:26px;letter-spacing:4px}.heading{display:flex;justify-content:space-between;margin:12px 0}.scroll{overflow:auto}table{border-collapse:collapse;min-width:2000px;width:100%;font-variant-numeric:tabular-nums}th,td{border:1px solid #333;padding:5px;text-align:right;white-space:nowrap}th{text-align:center;background:#f7f8f8}td{text-align:center}td.number{text-align:right}.section td{font-weight:bold;background:#eef4f6}.subtotal{background:#f1f2f3;font-weight:700}.total{background:#e0e5e9;font-weight:700}p{font-size:12px}button{padding:10px 16px;background:#009f57;color:white;border:0;margin-bottom:10px}@page{size:A3 landscape;margin:10mm}@media print{body{margin:0;font-size:9pt}button{display:none}.scroll{overflow:visible}table{min-width:0;font-size:8pt}th,td{padding:1.5px;line-height:1.2}tr{break-inside:avoid}h1{font-size:18pt;margin:8px 0}.heading{margin:6px 0}.section td,.subtotal,.total{print-color-adjust:exact}}'''
-    return '<!doctype html><html lang="ko"><meta charset="utf-8"><title>원가배분내역서</title><style>'+css+'</style><body>'+button+h+'</body></html>'
+    button=('<button onclick="window.print()">인쇄 / PDF 저장</button>' if printable else '<button disabled>월 마감 후 출력</button>') if show_controls else ''
+    return '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>원가배분내역서</title><style>'+MATRIX_CSS+'</style></head><body>'+button+h+'</body></html>'
+
+def render_members(data,month,member_ids,printable=True):
+    ms=selected_members(data,member_ids);sections=[]
+    for m in ms:
+        html=render_matrix(data,month,printable,[m['id']],False)
+        sections.append('<section class="member-print-block">'+html.split('<body>',1)[1].rsplit('</body>',1)[0].replace('id="allocation-matrix"','id="allocation-matrix-member-'+str(m['id'])+'"',1)+'</section>')
+    button='<button onclick="window.print()">회원사별 각각 인쇄 / PDF 저장</button>' if printable else '<button disabled>월 마감 후 출력</button>'
+    return '<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>회원사별 원가배분내역서</title><style>'+MATRIX_CSS+'</style></head><body>'+button+''.join(sections)+'</body></html>'
