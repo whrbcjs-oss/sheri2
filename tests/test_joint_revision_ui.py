@@ -23,6 +23,15 @@ class RevisionUI(unittest.TestCase):
         self.assertFalse(any(x.label.startswith(('시작 연월','종료 연월')) for x in at.text_input))
         at.session_state['jv_page']='기성·하도급·회수';at.run();self.assertFalse(at.exception,str(at.exception))
         for title in ['공사대금 입력','관리비 및 보험료 입력','하도급 청구내역','회수내역 입력']:self.assertIn(title,[t.label for t in at.tabs])
+
+    def test_lead_and_nonlead_role_menu_filters_projects(self):
+        h=self.h;f.save_project_role(h.c,h.p,'비주관사')
+        at=self.app('프로젝트·회원사');at.session_state['jv_role']='비주관사';at.run()
+        self.assertFalse(at.exception,str(at.exception))
+        role=next(x for x in at.radio if x.label=='당사 공동도급 역할')
+        self.assertEqual(role.value,'비주관사')
+        project=next(x for x in at.selectbox if x.label=='공동도급 프로젝트')
+        self.assertIn(h.p,project.options)
     def test_month_close_enables_downloads_and_reopening_disables_them(self):
         h=self.h;h.ledger();db.allocate(h.c,h.p)
         at=self.app('월 마감·보고서 출력');at.run()

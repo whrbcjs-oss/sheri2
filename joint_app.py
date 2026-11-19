@@ -18,7 +18,7 @@ from joint_amounts import money_input,frame as amount_frame,show as amount_table
 from joint_report import render as report_html,money,period_label
 from joint_import import read as import_rows,LABELS
 
-VERSION='2026.11.19.36'
+VERSION='2026.11.19.37'
 
 def saved():
     st.session_state['_jv_success']='저장했습니다.';st.rerun()
@@ -55,18 +55,20 @@ def company_page(c):
         if st.form_submit_button('법인 저장',type='primary'):db.company(c,code,name,{**info,**values},selected);saved()
     st.dataframe([{'법인코드':x['code'],'법인명':x['name'],'회사 구분':json.loads(x['info']).get('회사구분','미분류')} for x in visible],hide_index=True,use_container_width=True)
 
-def project_page(c,current=None):
+def project_page(c,current=None,current_role='주관사'):
     st.header('프로젝트·회원사 등록')
     cos=db.companies(c)
     if not cos:st.info('먼저 법인·담당자에서 당사와 참여 회사를 등록하세요.');return
     labels={x['id']:f"{x['name']} [{x['code']}] · {json.loads(x['info']).get('회사구분','미분류')}" for x in cos};reverse={v:k for k,v in labels.items()}
-    ps=db.projects(c);selected=st.selectbox('프로젝트 등록·수정',[None]+[x['id'] for x in ps],index=([None]+[x['id'] for x in ps]).index(current) if current in [x['id'] for x in ps] else 0,format_func=lambda id:'새 프로젝트' if id is None else next(x['name'] for x in ps if x['id']==id))
+    ps=db.projects(c);selected=st.selectbox('프로젝트 등록·수정',[None]+[x['id'] for x in ps],index=([None]+[x['id'] for x in ps]).index(current) if current in [x['id'] for x in ps] else 0,format_func=lambda id:'새 프로젝트' if id is None else next(x['name']+' · 우리가 '+flow.project_role(c,x['id']) for x in ps if x['id']==id))
     old=next((x for x in ps if x['id']==selected),{});ms=db.members(c,selected) if selected else []
     owner_options=[x['id'] for x in cos if json.loads(x['info']).get('회사구분','미분류')!='외부 회원사' or x['id']==old.get('owner_id')]
     if not owner_options:st.info('관리법인으로 사용할 당사 또는 관계사를 등록하세요.');return
     with st.container(border=True):
         left,right=st.columns(2)
         with left:
+            roles=['주관사','비주관사'];stored_role=flow.project_role(c,selected) if selected else current_role
+            role=st.radio('당사 공동도급 역할',roles,index=roles.index(stored_role),horizontal=True,key='project_role_'+str(selected))
             name=st.text_input('공사명',old.get('name',''));owner=st.selectbox('당사·관계사 (관리법인)',owner_options,format_func=labels.get,index=owner_options.index(old.get('owner_id',owner_options[0])))
             contract=money_input('계약금액 전체',old.get('contract','0'),key='contract_'+str(selected));supply=money_input('공급가액 전체',old.get('supply','0'),key='contract_supply_'+str(selected));vat=money_input('계약 부가세액',old.get('vat','0'),key='contract_vat_'+str(selected))
         with right:
@@ -77,7 +79,7 @@ def project_page(c,current=None):
         frame=st.data_editor(pd.DataFrame(initial),num_rows='dynamic',hide_index=True,use_container_width=True,column_config={'법인':st.column_config.SelectboxColumn(options=list(reverse),required=True)})
         if st.button('프로젝트 저장',type='primary',key='save_project_'+str(selected)):
             entries=[dict(company_id=reverse[x['법인']],share=x['지분율(%)'],fee_enabled=x['관리비 적용'],fee_rate=x['관리비율(%)']) for x in frame.to_dict('records') if x.get('법인') in reverse]
-            db.project(c,name,owner,contract,supply,vat,start,end,entries,selected);saved()
+            project_id=db.project(c,name,owner,contract,supply,vat,start,end,entries,selected);flow.save_project_role(c,project_id,role);saved()
 
 def ledger_page(c,p,ms):
     st.header('원장 업로드·수기입력')
@@ -402,12 +404,14 @@ def render(user):
     c=db.connect()
     with st.sidebar:
         st.subheader('공동도급 관리대장')
+        role=st.radio('당사 공동도급 역할',['주관사','비주관사'],format_func=lambda x:'우리가 '+x,key='jv_role')
         page=st.radio('공동도급 업무',['법인·담당자','프로젝트·회원사','원장 등록','원가배분내역서','기성·하도급·회수','원가정산서','공문 작성','월 마감·보고서 출력','발행본·백업'],key='jv_page')
     try:
         if '_jv_success' in st.session_state:st.success(st.session_state.pop('_jv_success'))
-        ps=db.projects(c);p=None;m=None
+        ps=[x for x in db.projects(c) if flow.project_role(c,x['id'])==role];p=None;m=None
         if ps:
             cols=st.columns([2,2,1])
+            if st.session_state.get('jv_project') not in [x['id'] for x in ps]:st.session_state['jv_project']=ps[0]['id']
             p=cols[0].selectbox('공동도급 프로젝트',[x['id'] for x in ps],format_func=lambda id:next(x['name'] for x in ps if x['id']==id),key='jv_project')
             ms=db.members(c,p);options=[x['id'] for x in ms]
             if st.session_state.get('jv_member') not in options:st.session_state['jv_member']=options[0] if options else None
@@ -415,8 +419,8 @@ def render(user):
             m=next((x for x in ms if x['id']==selected),None)
             if m:cols[2].caption('지분 '+m['share']+'% · 관리비 '+(m['fee_rate']+'%' if m['fee_enabled'] else '미적용'))
         if page=='법인·담당자':company_page(c);return
-        if page=='프로젝트·회원사':project_page(c,p);return
-        if p is None or not m:st.info('법인 등록 후 프로젝트·회원사를 등록하세요.');return
+        if page=='프로젝트·회원사':project_page(c,p,role);return
+        if p is None or not m:st.info('우리가 '+role+'인 프로젝트를 프로젝트·회원사 메뉴에서 등록하거나 구분을 변경하세요.');return
         if page=='원장 등록':ledger_page(c,p,ms)
         elif page=='발행본·백업':archive_page(c,p)
         elif page=='기성·하도급·회수':entry_page(c,p,m)

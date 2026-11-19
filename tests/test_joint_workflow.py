@@ -114,3 +114,9 @@ class WorkflowTests(unittest.TestCase):
         month,data=f.latest_closed_letter(self.c,self.p,self.m)
         self.assertEqual(month,'2026-01')
         self.assertEqual(data,package['letters'][str(self.m)])
+
+    def test_project_role_defaults_to_lead_and_can_be_saved(self):
+        self.assertEqual(f.project_role(self.c,self.p),'주관사')
+        f.save_project_role(self.c,self.p,'비주관사')
+        self.assertEqual(f.project_role(self.c,self.p),'비주관사')
+        with self.assertRaisesRegex(ValueError,'역할'):f.save_project_role(self.c,self.p,'잘못된 구분')

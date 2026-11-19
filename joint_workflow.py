@@ -7,7 +7,9 @@ import collaboration as shared
 SELECTIONS=['receipts','fees','claims','subcontracts','recoveries']
 
 def install(c):
-    if not c.execute("SELECT 1 FROM sqlite_master WHERE name='jv_closes'").fetchone() and c.execute('SELECT 1 FROM jv_companies LIMIT 1').fetchone():shared.backup_database(c.path)
+    needs_close=not c.execute("SELECT 1 FROM sqlite_master WHERE name='jv_closes'").fetchone()
+    needs_roles=not c.execute("SELECT 1 FROM sqlite_master WHERE name='jv_project_roles'").fetchone()
+    if (needs_close or needs_roles) and c.execute('SELECT 1 FROM jv_companies LIMIT 1').fetchone():shared.backup_database(c.path)
     c.executescript('''
     CREATE TABLE IF NOT EXISTS jv_sources(batch_id INTEGER PRIMARY KEY REFERENCES jv_batches(id),content TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS jv_fee_groups(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES jv_projects(id),member_id INTEGER NOT NULL REFERENCES jv_members(id),label TEXT NOT NULL,receipt_ids TEXT NOT NULL,calculations TEXT NOT NULL);
@@ -16,6 +18,7 @@ def install(c):
     CREATE TABLE IF NOT EXISTS jv_runs(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL REFERENCES jv_projects(id),member_id INTEGER NOT NULL REFERENCES jv_members(id),name TEXT NOT NULL,selection TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS jv_closes(project_id INTEGER NOT NULL REFERENCES jv_projects(id),month TEXT NOT NULL,closed INTEGER NOT NULL DEFAULT 0,closed_by TEXT NOT NULL,closed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,snapshot TEXT NOT NULL,PRIMARY KEY(project_id,month));
     CREATE TABLE IF NOT EXISTS jv_close_history(id INTEGER PRIMARY KEY,project_id INTEGER NOT NULL,month TEXT NOT NULL,action TEXT NOT NULL,actor TEXT NOT NULL,reason TEXT NOT NULL,at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,snapshot TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS jv_project_roles(project_id INTEGER PRIMARY KEY REFERENCES jv_projects(id),role TEXT NOT NULL CHECK(role IN ('주관사','비주관사')));
     ''')
 
 def is_closed(c,p,month):
@@ -27,6 +30,22 @@ def ensure_open(c,p,start,end=None):
 
 def runs(c,p,m):return db.rows(c,'SELECT * FROM jv_runs WHERE project_id=? AND member_id=? ORDER BY id DESC',(p,m))
 def groups(c,p,m):return db.rows(c,'SELECT * FROM jv_fee_groups WHERE project_id=? AND member_id=? ORDER BY id',(p,m))
+
+def project_role(c,p):
+    row=c.execute('SELECT role FROM jv_project_roles WHERE project_id=?',(p,)).fetchone()
+    if row and row[0] in ['주관사','비주관사']:return row[0]
+    # Preserve an older role column if a previous operating version had one.
+    project=next((x for x in db.projects(c) if x['id']==p),{})
+    for key in ['our_role','project_role','lead_role','role','management_role']:
+        value=str(project.get(key,'')).strip()
+        if '비주관' in value:return '비주관사'
+        if value=='주관사' or ('주관' in value and '비주관' not in value):return '주관사'
+    return '주관사'
+
+def save_project_role(c,p,role):
+    if role not in ['주관사','비주관사']:raise ValueError('당사 공동도급 역할을 확인하세요.')
+    if not c.execute('SELECT 1 FROM jv_projects WHERE id=?',(p,)).fetchone():raise ValueError('프로젝트를 확인하세요.')
+    with c:c.execute('INSERT INTO jv_project_roles(project_id,role) VALUES(?,?) ON CONFLICT(project_id) DO UPDATE SET role=excluded.role',(p,role))
 
 def latest_closed_letter(c,p,m):
     """Return the newest frozen monthly settlement for a member, if one exists."""
