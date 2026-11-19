@@ -98,3 +98,19 @@ class WorkflowTests(unittest.TestCase):
     def test_legacy_multi_month_arrears_are_not_silently_omitted(self):
         db.save_entry(self.c,self.p,self.m,'opening','2026-02-10','2026-01','2026-02',dict(arrears=100,interest=1))
         with self.assertRaisesRegex(ValueError,'배분연월 하나'):f.month_letter(self.c,self.p,self.m,'2026-02')
+
+    def test_month_letter_accumulates_prior_arrears_and_interest(self):
+        db.save_entry(self.c,self.p,self.m,'opening','2026-01-10','2026-01','2026-01',dict(arrears=100,interest=1))
+        db.save_entry(self.c,self.p,self.m,'opening','2026-02-10','2026-02','2026-02',dict(arrears=250,interest=2))
+        data=f.month_letter(self.c,self.p,self.m,'2026-02')
+        self.assertEqual(db.num(data['amounts']['arrears']),350)
+        self.assertEqual(db.num(data['amounts']['interest']),3)
+        member=next(x for x in data['parties'] if x['name']=='가상 회원사')
+        self.assertEqual(db.num(member['arrears']),350)
+        self.assertEqual(db.num(member['interest']),3)
+
+    def test_latest_closed_letter_returns_frozen_month_data(self):
+        self.ledger();db.allocate(self.c,self.p);package=f.close_month(self.c,self.p,'2026-01',self.token)
+        month,data=f.latest_closed_letter(self.c,self.p,self.m)
+        self.assertEqual(month,'2026-01')
+        self.assertEqual(data,package['letters'][str(self.m)])

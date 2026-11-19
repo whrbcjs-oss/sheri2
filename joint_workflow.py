@@ -28,6 +28,15 @@ def ensure_open(c,p,start,end=None):
 def runs(c,p,m):return db.rows(c,'SELECT * FROM jv_runs WHERE project_id=? AND member_id=? ORDER BY id DESC',(p,m))
 def groups(c,p,m):return db.rows(c,'SELECT * FROM jv_fee_groups WHERE project_id=? AND member_id=? ORDER BY id',(p,m))
 
+def latest_closed_letter(c,p,m):
+    """Return the newest frozen monthly settlement for a member, if one exists."""
+    rows=db.rows(c,'SELECT month,snapshot FROM jv_closes WHERE project_id=? AND closed=1 ORDER BY month DESC',(p,))
+    for row in rows:
+        try:data=json.loads(row['snapshot'])['letters'][str(m)]
+        except (KeyError,TypeError,ValueError,json.JSONDecodeError):continue
+        return row['month'],data
+    return None
+
 def source_entries(c,p,m,kind):
     return [dict(e,data=json.loads(e['payload'])) for e in db.entries(c,p,m,kind)]
 
@@ -181,9 +190,19 @@ def month_letter(c,p,m,month):
     month=db.period(month);raw=[x for x in db.ledger(c,p) if x['allocation_month']==month];al=db.allocations(c,p,month,month)
     opening=source_entries(c,p,m,'opening')
     if any(e['period_start']<=month<=e['period_end'] and (e['period_start']!=month or e['period_end']!=month) for e in opening):raise ValueError('이전 버전의 전월 미수·이자가 여러 달에 걸쳐 있습니다. 해당 내역을 선택해 배분연월 하나로 수정한 뒤 마감하세요.')
-    selected=[e for e in opening if e['period_start']==month and e['period_end']==month]
+    # Each monthly input is an additional outstanding amount.  The official
+    # letter must therefore show the accumulated balance through the selected
+    # month, not only the row entered for that month.
+    selected=[e for e in opening if e['period_end']<=month]
     pending=sum(not c.execute('SELECT 1 FROM jv_allocations WHERE ledger_id=?',(r['id'],)).fetchone() for r in raw)
-    return db.assemble(c,p,m,raw,al,selected,month,month,pending,claim_only=True)
+    result=db.assemble(c,p,m,raw,al,selected,month,month,pending,claim_only=True)
+    # assemble() normally scopes party-level manual rows to the report period.
+    # A monthly letter uses cumulative opening balances for every participant.
+    for party,member in zip(result['parties'],db.members(c,p)):
+        entries=[e for e in source_entries(c,p,member['id'],'opening') if e['period_end']<=month]
+        party['arrears']=str(sum((db.num(e['data'].get('arrears')) for e in entries),Decimal(0)))
+        party['interest']=str(sum((db.num(e['data'].get('interest')) for e in entries),Decimal(0)))
+    return result
 
 def close_month(c,p,month,token):
     user=shared.validate_session(token)

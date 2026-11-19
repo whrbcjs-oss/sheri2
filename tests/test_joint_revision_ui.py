@@ -3,6 +3,7 @@ import unittest
 import test_joint_workflow as fixtures
 from streamlit.testing.v1 import AppTest
 import joint_store as db
+import joint_workflow as f
 
 class RevisionUI(unittest.TestCase):
     def setUp(self):
@@ -33,3 +34,15 @@ class RevisionUI(unittest.TestCase):
         next(x for x in at.text_input if x.label=='마감 해제 사유').set_value('검증을 위한 해제')
         next(x for x in at.button if x.label=='관리자 마감 해제').click();at.run();self.assertFalse(at.exception,str(at.exception))
         self.assertTrue(next(x for x in at.button if x.label=='보고서 출력 묶음').disabled)
+
+    def test_settlement_defaults_to_saved_run_and_closed_data(self):
+        h=self.h;receipt=h.receipt('기성1',1234)
+        run=f.save_run(h.c,h.p,h.m,'저장 정산',dict(h.selection(),receipts=[receipt]))
+        at=self.app('원가정산서');at.run()
+        selected=next(x for x in at.selectbox if x.label=='정산 건')
+        self.assertEqual(selected.value,run)
+        self.assertIn('1,234',at.get('iframe')[0].proto.srcdoc)
+
+        f.delete_run(h.c,h.p,h.m,run);h.ledger();db.allocate(h.c,h.p);f.close_month(h.c,h.p,'2026-01',h.token)
+        at=self.app('원가정산서');at.run()
+        self.assertIn('2026-01 마감 자료',at.get('iframe')[0].proto.srcdoc)

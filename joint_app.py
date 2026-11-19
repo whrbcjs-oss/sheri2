@@ -18,7 +18,7 @@ from joint_amounts import money_input,frame as amount_frame,show as amount_table
 from joint_report import render as report_html,money,period_label
 from joint_import import read as import_rows,LABELS
 
-VERSION='2026.11.02.1'
+VERSION='2026.11.19.36'
 
 def saved():
     st.session_state['_jv_success']='저장했습니다.';st.rerun()
@@ -306,8 +306,10 @@ def settlement_page(c,p,m):
     st.header('원가정산서 · 내역 선택')
     rs=flow.runs(c,p,m['id'])
     if st.session_state.get('_jv_next_run',[])[:2]==[p,m['id']]:st.session_state[f"run_{p}_{m['id']}"]=st.session_state.pop('_jv_next_run')[2]
-    if st.session_state.get(f"run_{p}_{m['id']}") not in [None]+[r['id'] for r in rs]:st.session_state[f"run_{p}_{m['id']}"]=None
-    selected=st.selectbox('정산 건',[None]+[r['id'] for r in rs],format_func=lambda id:'새 정산' if id is None else next(r['name'] for r in rs if r['id']==id),key=f"run_{p}_{m['id']}")
+    run_key=f"run_{p}_{m['id']}"
+    if run_key not in st.session_state and rs:st.session_state[run_key]=rs[0]['id']
+    if st.session_state.get(run_key) not in [None]+[r['id'] for r in rs]:st.session_state[run_key]=None
+    selected=st.selectbox('정산 건',[None]+[r['id'] for r in rs],format_func=lambda id:'새 정산' if id is None else next(r['name'] for r in rs if r['id']==id),key=run_key)
     old=next((r for r in rs if r['id']==selected),{});default=json.loads(old.get('selection','{}'));scope=f"{p}_{m['id']}_{selected}"
     name=st.text_input('정산명',old.get('name',''),key='run_name_'+scope);selection={}
     source=flow.source_entries(c,p,m['id'],'receipt')
@@ -328,10 +330,16 @@ def settlement_page(c,p,m):
         with st.expander('정산 연결 해제'):
             confirmed=st.checkbox('이 정산의 선택 연결을 삭제합니다. 공사대금·관리비·원장·발행본은 유지됩니다.',key='run_delete_'+scope)
             if st.button('정산 건 연결 삭제',disabled=not confirmed):flow.delete_run(c,p,m['id'],selected);saved()
-    if not any(selection.values()):st.info('내역을 선택하면 저장하지 않아도 아래 정산서가 바로 갱신됩니다.')
-    try:data=flow.selected_settlement(c,p,m['id'],selection)
-    except ValueError as e:st.warning(str(e));return
-    data['run_name']=name or '선택 내역 미리보기'
+    latest_closed=flow.latest_closed_letter(c,p,m['id']) if selected is None and not any(selection.values()) else None
+    if latest_closed:
+        closed_month,data=latest_closed
+        st.info(closed_month+' 마감 자료를 기본 표시합니다. 새 정산을 시작하면 선택한 내역으로 미리보기가 바뀝니다.')
+        data['run_name']=closed_month+' 마감 자료'
+    else:
+        if not any(selection.values()):st.info('내역을 선택하면 저장하지 않아도 아래 정산서가 바로 갱신됩니다.')
+        try:data=flow.selected_settlement(c,p,m['id'],selection)
+        except ValueError as e:st.warning(str(e));return
+        data['run_name']=name or '선택 내역 미리보기'
     for warning in data.get('warnings',[]):st.info(warning)
     number,issued,meta=issue_settings(p,m,'정산서',data)
     html=report_html(data,'정산서',meta)
@@ -353,6 +361,7 @@ def monthly_reports(c,p,m,user,letter_only=False):
             if st.button('관리자 마감 해제'):flow.reopen(c,p,month,st.session_state['_auth_token'],reason);saved()
     if letter_only and not closed:
         with st.expander('공문 전월 미수액 · 지연이자 입력'):
+            st.caption('공문에는 선택한 배분연월까지 입력된 전월 미수액과 지연이자의 누계 금액이 표시됩니다.')
             entry_form(c,p,m,'opening',month)
     data=flow.closed_package(c,p,month)['letters'][str(m['id'])] if closed else flow.month_letter(c,p,m['id'],month)
     number,issued,meta=issue_settings(p,m,'공문',data,month)
