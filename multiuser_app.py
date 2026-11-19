@@ -78,6 +78,8 @@ def account_panel(user):
                         st.rerun()
                     except (ValueError, PermissionError) as e:
                         st.error(str(e))
+        from ui_theme import render_settings
+        render_settings(user)
         return st.session_state.get('_workspace', '결산 업무')
 
 
@@ -171,6 +173,8 @@ if not user:
         st.session_state.clear()
     login_screen()
 
+from ui_theme import apply as apply_ui_theme
+apply_ui_theme(user)
 workspace = account_panel(user)
 try:
     with shared.LOCK:
