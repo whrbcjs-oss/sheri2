@@ -16,6 +16,11 @@ def rate(v):
     except Exception:return 0.0
 def trunc10(v):return int((Decimal(str(v))/Decimal('10')).quantize(Decimal('1'),rounding=ROUND_DOWN)*Decimal('10'))
 def normalized(v):return re.sub(r'[^0-9A-Za-z가-힣]','',text(v)).replace('주식회사','').replace('㈜','')
+def project_key(row):
+    supplied=text(row.get('project_key'))
+    if supplied:return supplied
+    return '|'.join([normalized(row.get('client')),normalized(row.get('project')),normalized(row.get('start'))])
+def completed(v):return '준공' in normalized(v) or normalized(v) in ['완료','정산완료']
 
 ALIASES={'효성':['효성'],'다혜건설':['다혜','다혜건설'],'효성전문':['전문','효성전문'],'한길':['한길'],'효성엘비데크':['엘비','엘비데크','효성엘비데크']}
 def company_tokens(company):
@@ -37,6 +42,26 @@ def parse(blob,year,company,sheet_name=None):
     if chosen not in values.sheetnames:raise ValueError('선택한 결산연도·법인 시트를 찾을 수 없습니다.')
     s=values[chosen];header=next((r for r in range(1,min(s.max_row,30)+1) if '발주처' in normalized(s.cell(r,1).value) and '공사명' in normalized(s.cell(r,2).value)),None)
     if not header:raise ValueError('발주처·공사명 머리글을 찾지 못했습니다.')
+    headers={normalized(s.cell(header,col).value):col for col in range(1,s.max_column+1)}
+    if '공사관리번호' in headers:
+        def value(row,*names):
+            col=next((headers.get(normalized(name)) for name in names if headers.get(normalized(name))),None)
+            return s.cell(row,col).value if col else None
+        out=[]
+        for row in range(header+1,s.max_row+1):
+            client=text(value(row,'발주처'));project=text(value(row,'공사명'))
+            if not client and not project:continue
+            item=dict(source_row=row,project_key=text(value(row,'공사관리번호')),client=client,project=project,start=text(value(row,'착공일')),end=text(value(row,'준공일')),
+                contract=num(value(row,'계약공급가액')),prior_revenue=num(value(row,'전기수입')),current_revenue=num(value(row,'당기수입')),
+                prior_cost=num(value(row,'전기원가')),current_cost=num(value(row,'당기원가')),expected_cost_rate=rate(value(row,'예상원가율')),
+                trade=text(value(row,'공종')),status=text(value(row,'상태')),prior_adjustment=num(value(row,'전기진행률조정','전기진행율')),
+                current_adjustment=num(value(row,'가져온당기조정','당기진행율')),prior_unfinished=num(value(row,'전기미완성')),
+                current_unfinished=num(value(row,'당기미완성')),note=text(value(row,'비고')),allocation_mode=text(value(row,'배분방식')) or 'auto',
+                allocated_adjustment=(num(value(row,'최종당기진행율')) if value(row,'최종당기진행율') not in (None,'') else None),
+                carryover_eligible=0 if text(value(row,'차기이월')).upper() in ['N','아니오','제외'] else 1)
+            item['project_key']=project_key(item);out.append(recalculate(item))
+        if not out:raise ValueError('현장별 공사수입·원가 행을 찾지 못했습니다.')
+        return chosen,out
     # Later helper rows repeat a project with a decimal expected cost rate in column I.
     expected={}
     for r in range(header+4,s.max_row+1):
@@ -59,7 +84,8 @@ def parse(blob,year,company,sheet_name=None):
                 prior_cost=helper.get('prior_cost',num(s.cell(r+1,5).value)),current_cost=helper.get('current_cost',num(s.cell(r+1,6).value)),total_cost=num(s.cell(r+1,7).value),
                 actual_cost_rate=actual_rate,expected_cost_rate=exp,trade=text(s.cell(r,11).value or s.cell(r+1,11).value),status=status,
                 prior_adjustment=j if label=='전기진행율' else 0,current_adjustment=(j if label=='당기진행율' else j2 if label2=='당기진행율' else 0),
-                prior_unfinished=j if label=='전기미완성' else 0,current_unfinished=j2 if label2=='당기미완성' else 0,note='')
+                prior_unfinished=j if label=='전기미완성' else 0,current_unfinished=j2 if label2=='당기미완성' else 0,note='',allocation_mode='auto',allocated_adjustment=None)
+            item['project_key']=project_key(item);item['carryover_eligible']=int(not completed(status))
             out.append(recalculate(item));r+=2;continue
         r+=1
     if not out:raise ValueError('현장별 공사수입·원가 행을 찾지 못했습니다.')
@@ -71,15 +97,56 @@ def recalculate(row):
     er=rate(x.get('expected_cost_rate'))
     if er:
         x['expected_revenue']=int(Decimal(x['total_cost'])/Decimal(str(er)))
+        if num(x.get('contract'))>0:x['expected_revenue']=min(x['expected_revenue'],num(x.get('contract')))
         x['calculated_adjustment']=trunc10(x['expected_revenue']-x['total_revenue'])
     else:
         x['expected_revenue']=x['total_revenue']+num(x.get('current_adjustment'));x['calculated_adjustment']=num(x.get('current_adjustment'))
     return x
 
+def allocation_analysis(row):
+    x=recalculate(row);natural=num(x.get('calculated_adjustment'));mode=text(x.get('allocation_mode')) or 'auto'
+    reasons=[]
+    if x.get('deleted'):reasons.append('삭제 현장')
+    if x.get('import_missing'):reasons.append('최근 업로드 누락')
+    if completed(x.get('status')):reasons.append('준공 현장')
+    if not num(x.get('contract')):reasons.append('계약금액 없음')
+    if not rate(x.get('expected_cost_rate')):reasons.append('예상원가율 없음')
+    if mode=='exclude':reasons.append('작업자 배분 제외')
+    eligible=not reasons and mode!='fixed'
+    minimum=min(0,natural) if eligible else 0;maximum=max(0,natural) if eligible else 0
+    fixed=num(x.get('allocated_adjustment')) if mode=='fixed' else 0
+    return {**x,'project_key':project_key(x),'allocation_mode':mode,'eligible':eligible,'allocation_reason':' · '.join(reasons) if reasons else ('작업자 고정' if mode=='fixed' else '자동배분 가능'),'minimum_adjustment':minimum,'maximum_adjustment':maximum,'natural_adjustment':natural,'fixed_adjustment':fixed}
+
+def allocate(rows,target):
+    """Allocate a signed target only inside each eligible project's natural range."""
+    analyzed=[allocation_analysis(r) for r in rows if not r.get('deleted')];target=num(target)
+    fixed=sum(r['fixed_adjustment'] for r in analyzed);remaining=target-fixed;sign=1 if remaining>=0 else -1
+    capacities=[]
+    for r in analyzed:
+        capacity=r['maximum_adjustment'] if sign>0 else abs(r['minimum_adjustment'])
+        if r['eligible'] and capacity>0:capacities.append((r,capacity))
+    available=sum(cap for _,cap in capacities);used=min(abs(remaining),available);allocations={r['id']:r['fixed_adjustment'] if r['allocation_mode']=='fixed' else 0 for r in analyzed if r.get('id') is not None}
+    distributed=0;fractions=[]
+    if available and used:
+        for r,capacity in capacities:
+            raw=used*capacity;share=raw//available;distributed+=share
+            allocations[r['id']]=sign*share;fractions.append((raw%available,capacity,r['id']))
+        for _,_,row_id in sorted(fractions,reverse=True)[:used-distributed]:allocations[row_id]+=sign
+    allocated=fixed+sign*used;residual=target-allocated
+    result=[]
+    for r in analyzed:
+        proposed=allocations.get(r.get('id'),r['fixed_adjustment'] if r['allocation_mode']=='fixed' else 0)
+        result.append({**r,'proposed_adjustment':proposed})
+    return {'target':target,'fixed':fixed,'available':available,'allocated':allocated,'residual':residual,'rows':result,'allocations':allocations}
+
+def final_adjustment(row):
+    value=row.get('allocated_adjustment')
+    return num(value) if value is not None else num(recalculate(row).get('calculated_adjustment'))
+
 def summary(rows,extra=None):
     active=[recalculate(r) for r in rows if not r.get('deleted')];extra=extra or {}
-    table_revenue=sum(num(r.get('current_revenue')) for r in active);prior=sum(num(r.get('prior_adjustment')) for r in active);current=sum(num(r.get('calculated_adjustment')) for r in active)
+    table_revenue=sum(num(r.get('current_revenue')) for r in active);prior=sum(num(r.get('prior_adjustment')) for r in active);current=sum(final_adjustment(r) for r in active)
     prior_unfinished=sum(num(r.get('prior_unfinished')) for r in active);current_unfinished=sum(num(r.get('current_unfinished')) for r in active)
     vat=num(extra.get('vat_adjustment'));manual=num(extra.get('manual_adjustment'))
-    expected=-prior+current+prior_unfinished-current_unfinished+vat+manual
-    return dict(table_revenue=table_revenue,prior_adjustment=prior,current_adjustment=current,prior_unfinished=prior_unfinished,current_unfinished=current_unfinished,vat_adjustment=vat,manual_adjustment=manual,expected_adjustment=expected,missing_rates=sum(1 for r in active if not rate(r.get('expected_cost_rate')) and '준공' not in normalized(r.get('status'))))
+    tax_flow=-prior+current+prior_unfinished-current_unfinished+vat+manual
+    return dict(table_revenue=table_revenue,prior_adjustment=prior,current_adjustment=current,prior_unfinished=prior_unfinished,current_unfinished=current_unfinished,vat_adjustment=vat,manual_adjustment=manual,expected_adjustment=current,tax_flow_adjustment=tax_flow,missing_rates=sum(1 for r in active if not rate(r.get('expected_cost_rate')) and not completed(r.get('status'))))

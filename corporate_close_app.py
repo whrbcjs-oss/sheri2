@@ -19,7 +19,7 @@ import corporate_close_capital as capital
 import corporate_progress as progress
 import corporate_progress_report as progress_report
 
-VERSION='2026.11.19.35'
+VERSION='2026.11.20.44'
 ADJUSTMENT_SUBPAGES=['세금과공과명세서','선급비용명세서','기업업무추진비명세서']
 PAGES=['대시보드','법인세 계산 흐름표','기초정보입력','공사수입·원가대비','세무조정 항목',*ADJUSTMENT_SUBPAGES,'소득구분계산서','세액 계산','유보잔액 관리','결산 확정·출력','경영상태비율 점검','실질자본금 점검','기업진단지침 관리','법인·업종 설정']
 VALUE_FIELDS=[('construction_revenue','공사수입'),('service_revenue','용역수입'),('progress_adjustment','진행률조정수입(예상)'),('cost','매출원가'),('sga','판매관리비'),('nonop_income','영업외수익'),('nonop_expense','영업외비용'),('prior_sales','전기매출'),('prior_progress','전기 진행률 수입조정'),('prior_unfinished','전기 미완성공사'),('current_unfinished','당기 미완성공사')]
@@ -137,6 +137,12 @@ def computed(c,x,company):
     values=x.get('values',{});f=calc.flow(values,adjustments);businesses=[{'name':name,'revenue':x.get('business_revenue',{}).get(name,0)} for name in company.get('businesses',['건설업'])]
     if len(businesses)==1 and not businesses[0]['revenue']:businesses[0]['revenue']=f['sales']
     inc=calc.income_division(values,adjustments,businesses,other_income,manual.get('nonop_expense_exempt'),manual.get('nonop_expense_other'),x.get('losses',{}));inc['classification_details']=[{'kind':r['kind'],'account':r['account'],'description':r['description'],'reason':str(r.get('business','')).replace('자동:',''),'classification':r['classification'],'amount':r['amount']} for r in lr if r['kind']=='영업외수익' and '잡이익' in db.normalized(r['account'])];tax=calc.tax_calculation(inc['current_income'],{**x.get('tax',{}),'pre_tax':f['pre_tax']});return adjustments,inc,tax,reserve_summary(c,x)
+def performance_snapshot(c,x,company,values=None,tax_inputs=None):
+    """Live expected ratios while preserving the saved tax-adjustment base."""
+    adjustments,inc,_,_=computed(c,x,company);saved=calc.flow(x.get('values',{}),adjustments);current=calc.flow(values if values is not None else x.get('values',{}),adjustments)
+    current_income=inc['current_income']+(current['pre_tax']-saved['pre_tax']);tax=calc.tax_calculation(current_income,{**x.get('tax',{}),**(tax_inputs or {}),'pre_tax':current['pre_tax']})
+    sales=current['sales'];construction=current['construction_revenue']+current['progress_adjustment'];pre_tax=current['pre_tax'];tax_expense=tax['tax_expense']
+    return {'cost_rate':current['cost']/construction*100 if construction else 0,'gross_rate':current['gross_profit']/sales*100 if sales else 0,'operating_rate':current['operating_profit']/sales*100 if sales else 0,'pre_tax_rate':pre_tax/sales*100 if sales else 0,'net_rate':tax['net_income']/sales*100 if sales else 0,'tax_expense':tax_expense,'effective_tax_rate':tax_expense/pre_tax*100 if pre_tax>0 else 0}
 def save_payload(c,x,payload):db.save_case(c,x,payload,x['version']);refresh()
 
 def dashboard_page(c,x,company):
@@ -167,6 +173,15 @@ def basic_input_page(c,x,company):
         p2.html(f'<div class="cc-auto">진행률조정 계　{money(values.get("prior_progress"))+money(values.get("progress_adjustment")):,}</div>');p3.html('<div class="cc-section">조정 전 검토사항</div>')
         for key,label in REVIEW_FIELDS:review[key]=money_field(p3,label,review.get(key),key='flow_review_'+key,disabled=disabled)
         p4.html('<div class="cc-section">기납부세액</div>');tax['prepaid_corp_interim']=money_field(p4,'법인세 중간예납',tax.get('prepaid_corp_interim'),key='flow_prepaid_interim',disabled=disabled);tax['prepaid_corp_withholding']=money_field(p4,'법인세 원천납부',tax.get('prepaid_corp_withholding'),key='flow_prepaid_withholding',disabled=disabled);tax['prepaid_local']=money_field(p4,'지방소득세 기납부',tax.get('prepaid_local'),key='flow_prepaid_local',disabled=disabled);tax['prepaid_corp']=tax['prepaid_corp_interim']+tax['prepaid_corp_withholding'];p4.html(f'<div class="cc-auto">선납세금 합계　{tax["prepaid_corp"]+tax["prepaid_local"]:,}</div>')
+        current_metrics=performance_snapshot(c,x,company,values,tax);prior_case=db.case(c,x['company_id'],x['year']-1,create=False);prior_metrics=performance_snapshot(c,prior_case,company) if prior_case else None
+        st.markdown('**전년도 대비 예상 손익·세율 검산**')
+        labels=[('조정 후 공사원가율','cost_rate','%'),('매출총이익률','gross_rate','%'),('영업이익률','operating_rate','%'),('세전이익률','pre_tax_rate','%'),('당기순이익률','net_rate','%'),('유효세율','effective_tax_rate','%'),('법인세비용','tax_expense','원')]
+        comparison=[]
+        for label,key,unit in labels:
+            old=prior_metrics.get(key,0) if prior_metrics else 0;now=current_metrics[key];difference=now-old
+            status='전년도 없음' if not prior_metrics else ('유사' if (abs(difference)<=1 if unit=='%' else abs(difference)<=max(abs(old)*.1,1000000)) else '확인')
+            comparison.append({'검토항목':label,'전년도':f'{old:,.2f}%' if unit=='%' else f'{old:,.0f}원','당해 예상':f'{now:,.2f}%' if unit=='%' else f'{now:,.0f}원','증감':f'{difference:+,.2f}%p' if unit=='%' else f'{difference:+,.0f}원','판정':status})
+        st.dataframe(pd.DataFrame(comparison),hide_index=True,use_container_width=True)
         st.markdown('**연구 및 인력개발비(세액공제)**');old=calc.research_totals(review);detail=st.checkbox('세부항목으로 계산',value=old['detail_enabled'] or not review,disabled=disabled);r1,r2,r3,r4=st.columns(4);review['rnd_employee_count']=r1.number_input('연구 인건비 인원(명)',min_value=0,value=old['employee_count'],disabled=disabled or not detail);review['rnd_labor']=money_field(r1,f'인건비({review["rnd_employee_count"]}명)',old['labor'],key='rnd_labor',disabled=disabled or not detail);review['rnd_material']=money_field(r2,'재료비',old['material'],key='rnd_material',disabled=disabled or not detail);review['rnd_other']=money_field(r2,'기타 연구개발비',old['other'],key='rnd_other',disabled=disabled or not detail);review['rnd_outsourced']=money_field(r3,'위탁·공동연구비',old['outsourced'],key='rnd_outsourced',disabled=disabled or not detail);review['training_sga']=money_field(r3,'(판)교육훈련비',old['training_sga'],key='training_sga',disabled=disabled or not detail);review['training_cost']=money_field(r4,'(경)교육훈련비',old['training_cost'],key='training_cost',disabled=disabled or not detail);review['rnd_detail_enabled']=detail;rt=calc.research_totals(review);review['rnd']=rt['current_total'];review['tech_total']=rt['tech_total'];r4.html(f'<div class="cc-auto">경상연구개발비 계　{rt["current_total"]:,}</div><div class="cc-auto">인력개발비 계　{rt["personnel_total"]:,}</div><div class="cc-auto">기술개발투자비　{rt["tech_total"]:,}</div>')
         if len(company.get('businesses',[]))>1:
             st.markdown('**겸업 업종별 매출액**');cols=st.columns(min(4,len(company['businesses'])))
@@ -553,64 +568,77 @@ def import_page(c,x,embedded=False):
             if st.button('원장 복구'):db.restore_import(c,x,iid);refresh()
 
 def progress_page(c,x,company):
-    st.html('<div class="cc-title">공사수입·원가대비 및 진행률 조정 검산</div>')
-    st.caption('현장별 공사수입·원가를 집계하고 예상원가율에 따른 진행률 조정액을 법인세 계산 흐름표와 검산합니다.')
+    st.html('<div class="cc-title">공사수입·원가대비 및 진행률 조정 검산</div>');st.caption('기초정보의 예상 진행률조정 총액을 적격 현장의 조정 가능범위 안에서 배분하고 차기까지 이월 관리합니다.')
     up=st.file_uploader('공사수입·원가대비표 Excel',type=['xlsx'],key='cc_progress_upload');parsed=None;sheet=''
     if up:
         try:
-            choices=progress.sheet_candidates(up.getvalue(),x['year'],company['name'])
-            sheet=st.selectbox('가져올 법인·연도 시트',choices) if choices else ''
-            if sheet:sheet,parsed=progress.parse(up.getvalue(),x['year'],company['name'],sheet);st.success(f'{sheet} · 현장 {len(parsed):,}건을 확인했습니다.');show_frame(pd.DataFrame(parsed[:20]),hide_index=True,use_container_width=True)
+            choices=progress.sheet_candidates(up.getvalue(),x['year'],company['name']);sheet=st.selectbox('가져올 법인·연도 시트',choices) if choices else ''
+            if sheet:sheet,parsed=progress.parse(up.getvalue(),x['year'],company['name'],sheet);st.success(f'{sheet} · 현장 {len(parsed):,}건을 확인했습니다. 기존 공사관리번호는 수정하고 새로운 현장만 추가합니다.');show_frame(pd.DataFrame(parsed[:20]),hide_index=True,use_container_width=True)
         except ValueError as e:st.error(str(e))
     if st.button('미리보기 현장자료 등록·갱신',type='primary',disabled=not parsed or x['status']=='confirmed'):
         try:db.save_progress_import(c,x,up.name,sheet,up.getvalue(),parsed);refresh()
         except ValueError as e:st.error(str(e))
     rows=db.progress_projects(c,x['id']);extra=dict(x.get('progress',{}));s=progress.summary(rows,extra);flow_revenue=money(x.get('values',{}).get('construction_revenue'));ledger_revenue=money(extra.get('ledger_construction_revenue',flow_revenue));flow_adjustment=money(x.get('values',{}).get('progress_adjustment'))
-    tabs=st.tabs(['현장별 진행률 검산','원가율·조정값 관리','업로드·변경 이력','A4 출력·Excel'])
+    tabs=st.tabs(['현장별 자동배분','현장별 진행률 검산','원가율·조정값 관리','업로드·변경 이력·차기이월','A4 출력·Excel'])
     with tabs[0]:
+        plan=progress.allocate(rows,flow_adjustment);cards=st.columns(5)
+        for col,label,value in zip(cards,['배분 목표','작업자 고정','자동배분 가능범위','배분안 합계','미배분 차액'],[plan['target'],plan['fixed'],plan['available'],plan['allocated'],plan['residual']]):col.metric(label,f'{value:,}원')
+        if plan['residual']:st.error(f'현장별 조정 가능범위가 부족하여 {plan["residual"]:,}원을 배분할 수 없습니다. 예상원가율·준공상태·작업자 고정값을 확인하세요.')
+        elif rows:st.success('예상 진행률조정 총액과 현장별 배분안 합계가 일치합니다.')
+        allocation_view=[{'공사관리번호':r['project_key'],'발주처':r['client'],'공사명':r['project'],'상태':r['status'],'배분방식':r['allocation_mode'],'자동판정':r['allocation_reason'],'적정조정액':r['natural_adjustment'],'최소':r['minimum_adjustment'],'최대':r['maximum_adjustment'],'배분안':r['proposed_adjustment'],'차기이월':'Y' if r.get('carryover_eligible') else 'N'} for r in plan['rows']]
+        show_frame(pd.DataFrame(allocation_view),hide_index=True,use_container_width=True,column_config={k:st.column_config.NumberColumn(format='%,d') for k in ['적정조정액','최소','최대','배분안']})
+        if st.button('목표금액과 일치하는 자동배분안 저장',type='primary',disabled=not rows or bool(plan['residual']) or x['status']=='confirmed'):db.save_progress_allocations(c,x,plan['allocations']);refresh()
+        st.caption('진행 중이며 계약금액·예상원가율·누계수입·누계원가가 정상인 현장에만 적정 범위 안에서 배분합니다.')
+    with tabs[1]:
         cards=st.columns(5)
-        for col,label,value in zip(cards,['원장 공사수입','현장표 당기 공사수입','공사수입 검산차이','진행률조정 예상액','흐름표 반영 차이'],[ledger_revenue,s['table_revenue'],ledger_revenue-s['table_revenue'],s['expected_adjustment'],flow_adjustment-s['expected_adjustment']]):col.metric(label,f'{value:,}원')
+        for col,label,value in zip(cards,['원장 공사수입','현장표 당기 공사수입','공사수입 검산차이','당기진행율 배분합계','목표 대비 차이'],[ledger_revenue,s['table_revenue'],ledger_revenue-s['table_revenue'],s['current_adjustment'],flow_adjustment-s['current_adjustment']]):col.metric(label,f'{value:,}원')
         view=[]
         for r in rows:
-            z=progress.recalculate(r);view.append({'ID':r['id'],'검산':'예상원가율 확인' if not z['expected_cost_rate'] and z['status'] not in ['준공','준 공','준        공'] else '정상','발주처':z['client'],'공사명':z['project'],'계약공급가액':z['contract'],'전기수입':z['prior_revenue'],'당기수입':z['current_revenue'],'누계수입':z['total_revenue'],'전기원가':z['prior_cost'],'당기원가':z['current_cost'],'누계원가':z['total_cost'],'예상원가율(%)':round(z['expected_cost_rate']*100,4),'예상누적수입':z['expected_revenue'],'진행률조정':z['calculated_adjustment'],'상태':z['status']})
-        show_frame(pd.DataFrame(view),hide_index=True,use_container_width=True,column_config={k:st.column_config.NumberColumn(format='%,d') for k in ['계약공급가액','전기수입','당기수입','누계수입','전기원가','당기원가','누계원가','예상누적수입','진행률조정']})
-        if not rows:st.info('공사수입·원가대비표 Excel을 업로드하세요.')
+            z=progress.allocation_analysis(r);view.append({'ID':r['id'],'검산':z['allocation_reason'],'발주처':z['client'],'공사명':z['project'],'계약공급가액':z['contract'],'전기수입':z['prior_revenue'],'당기수입':z['current_revenue'],'누계수입':z['total_revenue'],'전기원가':z['prior_cost'],'당기원가':z['current_cost'],'누계원가':z['total_cost'],'예상원가율(%)':round(z['expected_cost_rate']*100,4),'예상누적수입':z['expected_revenue'],'적정조정액':z['natural_adjustment'],'최종당기진행율':progress.final_adjustment(r),'상태':z['status']})
+        show_frame(pd.DataFrame(view),hide_index=True,use_container_width=True,column_config={k:st.column_config.NumberColumn(format='%,d') for k in ['계약공급가액','전기수입','당기수입','누계수입','전기원가','당기원가','누계원가','예상누적수입','적정조정액','최종당기진행율']})
+        if not rows:st.info('공사수입·원가대비표 Excel을 업로드하거나 현장을 직접 추가하세요.')
         elif s['missing_rates']:st.warning(f'이월공사 중 예상원가율이 없는 현장 {s["missing_rates"]:,}건을 확인하세요.')
-        if rows and st.button('검산값을 흐름표 공사수입·진행률조정(예상)에 반영',type='primary',disabled=x['status']=='confirmed'):
-            payload={k:v for k,v in x.items() if k not in ['id','company_id','year','status','version']};values=dict(payload.get('values',{}));extra.setdefault('ledger_construction_revenue',flow_revenue);values['construction_revenue']=s['table_revenue'];values['progress_adjustment']=s['expected_adjustment'];payload.update(values=values,progress=extra);save_payload(c,x,payload)
-    with tabs[1]:
+        if rows and st.button('검산값을 흐름표 공사수입·당기진행율에 반영',type='primary',disabled=x['status']=='confirmed' or flow_adjustment!=s['current_adjustment']):
+            payload={k:v for k,v in x.items() if k not in ['id','company_id','year','status','version']};values=dict(payload.get('values',{}));extra.setdefault('ledger_construction_revenue',flow_revenue);values['construction_revenue']=s['table_revenue'];values['progress_adjustment']=s['current_adjustment'];payload.update(values=values,progress=extra);save_payload(c,x,payload)
+    with tabs[2]:
         if rows:
-            edit=pd.DataFrame([{'ID':r['id'],'버전':r['version'],'발주처':r['client'],'공사명':r['project'],'착공일':r['start'],'준공일':r['end'],'계약공급가액':r['contract'],'전기수입':r['prior_revenue'],'당기수입':r['current_revenue'],'전기원가':r['prior_cost'],'당기원가':r['current_cost'],'예상원가율(%)':round(float(r['expected_cost_rate'])*100,5),'공종':r['trade'],'상태':r['status'],'전기진행률조정':r['prior_adjustment'],'가져온당기조정':r['current_adjustment'],'전기미완성':r['prior_unfinished'],'당기미완성':r['current_unfinished'],'비고':r['note']} for r in rows])
-            edited=st.data_editor(edit,hide_index=True,use_container_width=True,disabled=['ID','버전'],column_config={k:st.column_config.NumberColumn(format='%,d') for k in ['계약공급가액','전기수입','당기수입','전기원가','당기원가','전기진행률조정','가져온당기조정','전기미완성','당기미완성']})
+            edit=pd.DataFrame([{'ID':r['id'],'버전':r['version'],'공사관리번호':r.get('project_key',''),'발주처':r['client'],'공사명':r['project'],'착공일':r['start'],'준공일':r['end'],'계약공급가액':r['contract'],'전기수입':r['prior_revenue'],'당기수입':r['current_revenue'],'전기원가':r['prior_cost'],'당기원가':r['current_cost'],'예상원가율(%)':round(float(r['expected_cost_rate'])*100,5),'공종':r['trade'],'상태':r['status'],'전기진행률조정':r['prior_adjustment'],'가져온당기조정':r['current_adjustment'],'배분방식':r.get('allocation_mode','auto'),'최종당기진행율':r.get('allocated_adjustment'),'차기이월':bool(r.get('carryover_eligible',1)),'이월메모':r.get('carryover_note',''),'전기미완성':r['prior_unfinished'],'당기미완성':r['current_unfinished'],'비고':r['note']} for r in rows])
+            numeric=['계약공급가액','전기수입','당기수입','전기원가','당기원가','전기진행률조정','가져온당기조정','최종당기진행율','전기미완성','당기미완성'];edited=st.data_editor(edit,hide_index=True,use_container_width=True,disabled=['ID','버전','공사관리번호'],column_config={**{k:st.column_config.NumberColumn(format='%,d') for k in numeric},'배분방식':st.column_config.SelectboxColumn(options=['auto','fixed','exclude']),'차기이월':st.column_config.CheckboxColumn()})
             if st.button('현장별 수정값 저장',disabled=x['status']=='confirmed'):
                 for _,r in edited.iterrows():
-                    vals={'client':r['발주처'],'project':r['공사명'],'start':r['착공일'],'end':r['준공일'],'contract':money(r['계약공급가액']),'prior_revenue':money(r['전기수입']),'current_revenue':money(r['당기수입']),'prior_cost':money(r['전기원가']),'current_cost':money(r['당기원가']),'expected_cost_rate':float(r['예상원가율(%)'] or 0)/100,'trade':r['공종'],'status':r['상태'],'prior_adjustment':money(r['전기진행률조정']),'current_adjustment':money(r['가져온당기조정']),'prior_unfinished':money(r['전기미완성']),'current_unfinished':money(r['당기미완성']),'note':r['비고']}
-                    db.save_progress_project(c,x,int(r['ID']),int(r['버전']),vals)
+                    allocated=None if pd.isna(r['최종당기진행율']) else money(r['최종당기진행율']);vals={'client':r['발주처'],'project':r['공사명'],'start':r['착공일'],'end':r['준공일'],'contract':money(r['계약공급가액']),'prior_revenue':money(r['전기수입']),'current_revenue':money(r['당기수입']),'prior_cost':money(r['전기원가']),'current_cost':money(r['당기원가']),'expected_cost_rate':float(r['예상원가율(%)'] or 0)/100,'trade':r['공종'],'status':r['상태'],'prior_adjustment':money(r['전기진행률조정']),'current_adjustment':money(r['가져온당기조정']),'allocation_mode':r['배분방식'],'allocated_adjustment':allocated,'carryover_eligible':int(bool(r['차기이월'])),'carryover_note':r['이월메모'],'prior_unfinished':money(r['전기미완성']),'current_unfinished':money(r['당기미완성']),'note':r['비고']};db.save_progress_project(c,x,int(r['ID']),int(r['버전']),vals)
                 refresh()
             st.markdown('**현장 삭제**');pid=st.selectbox('삭제할 현장',[r['id'] for r in rows],format_func=lambda z:next(r['project'] for r in rows if r['id']==z));reason=st.text_input('현장 삭제 사유');ack=st.checkbox('현장 삭제가 합계와 흐름표 검산에 미치는 영향을 확인했습니다.')
             if st.button('선택 현장 삭제',disabled=x['status']=='confirmed' or not ack):r=next(r for r in rows if r['id']==pid);db.delete_progress_project(c,x,pid,r['version'],reason);refresh()
+        with st.expander('현장 직접 추가'):
+            with st.form('cc_progress_add_project'):
+                a,b,c1=st.columns(3);client=a.text_input('발주처');project=b.text_input('공사명');start=c1.text_input('착공일');d,e,f=st.columns(3);end=d.text_input('준공일');contract=money_field(e,'계약공급가액',0);expected_rate=f.number_input('예상원가율(%)',min_value=0.0,max_value=100.0,value=0.0,step=.1);add=st.form_submit_button('현장 추가',disabled=x['status']=='confirmed')
+            if add:
+                if not project:st.error('공사명을 입력하세요.')
+                else:db.add_progress_project(c,x,{'client':client,'project':project,'start':start,'end':end,'contract':contract,'expected_cost_rate':expected_rate/100,'status':'진행중','allocation_mode':'auto','carryover_eligible':1});refresh()
         with st.form('cc_progress_extra'):
             a,b=st.columns(2);extra['vat_adjustment']=money_field(a,'VAT 신고 진행률 조정',extra.get('vat_adjustment'),key='progress_vat_adjustment',disabled=x['status']=='confirmed');extra['manual_adjustment']=money_field(b,'기타 수동 조정',extra.get('manual_adjustment'),key='progress_manual_adjustment',disabled=x['status']=='confirmed');extra['note']=st.text_input('조정 근거·메모',value=extra.get('note',''),disabled=x['status']=='confirmed');save_extra=st.form_submit_button('조정값 저장',disabled=x['status']=='confirmed')
-        if save_extra:
-            payload={k:v for k,v in x.items() if k not in ['id','company_id','year','status','version']};payload['progress']=extra;save_payload(c,x,payload)
+        if save_extra:payload={k:v for k,v in x.items() if k not in ['id','company_id','year','status','version']};payload['progress']=extra;save_payload(c,x,payload)
         deleted=[r for r in db.progress_projects(c,x['id'],True) if r['deleted']]
         if deleted:
             with st.expander('삭제 현장 복구'):
                 pid=st.selectbox('복구할 현장',[r['id'] for r in deleted],format_func=lambda z:next(r['project'] for r in deleted if r['id']==z),key='cc_progress_restore_project')
                 if st.button('선택 현장 복구',disabled=x['status']=='confirmed'):r=next(r for r in deleted if r['id']==pid);db.restore_progress_project(c,x,pid,r['version']);refresh()
-    with tabs[2]:
-        imports=db.progress_imports(c,x['id'],True);show_frame(pd.DataFrame(imports),hide_index=True,use_container_width=True)
-        active=[r for r in imports if not r['deleted']];deleted=[r for r in imports if r['deleted']]
+    with tabs[3]:
+        imports=db.progress_imports(c,x['id'],True);show_frame(pd.DataFrame(imports),hide_index=True,use_container_width=True);active=[r for r in imports if not r['deleted']];deleted=[r for r in imports if r['deleted']]
         if active:
-            iid=st.selectbox('삭제할 업로드',[r['id'] for r in active],format_func=lambda z:next(r['name']+' · '+r['sheet_name'] for r in active if r['id']==z))
-            if st.button('업로드 자료 삭제',disabled=x['status']=='confirmed'):db.delete_progress_import(c,x,iid);refresh()
+            iid=st.selectbox('숨길 업로드 이력',[r['id'] for r in active],format_func=lambda z:next(r['name']+' · '+r['sheet_name'] for r in active if r['id']==z))
+            if st.button('업로드 이력 숨김',disabled=x['status']=='confirmed'):db.delete_progress_import(c,x,iid);refresh()
         if deleted:
             iid=st.selectbox('복구할 업로드',[r['id'] for r in deleted],format_func=lambda z:next(r['name']+' · '+r['sheet_name'] for r in deleted if r['id']==z),key='cc_progress_restore_import')
             if st.button('업로드 자료 복구',disabled=x['status']=='confirmed'):db.restore_progress_import(c,x,iid);refresh()
-    with tabs[3]:
+        eligible=sum(1 for r in rows if r.get('carryover_eligible') and not progress.completed(r.get('status')));excluded=len(rows)-eligible;st.markdown('**차기 이월**');st.info(f'진행 중 이월 대상 {eligible:,}건 · 준공 또는 작업자 제외 {excluded:,}건')
+        if st.button(f'{x["year"]+1}년 현장자료 생성',type='primary',disabled=x['status']!='confirmed'):
+            next_case=db.case(c,x['company_id'],x['year']+1,create=True);result=db.carryover_progress_projects(c,x,next_case);st.success(f'{x["year"]+1}년으로 {result["carried"]:,}건을 이월하고 {result["excluded"]:,}건을 제외했습니다.')
+        if x['status']!='confirmed':st.caption('당해 법인결산 확정 후 차기 이월자료를 생성할 수 있습니다.')
+    with tabs[4]:
         html=progress_report.html(company['name'],x['year'],rows,flow_revenue,extra);xlsx=progress_report.workbook(company['name'],x['year'],rows,flow_revenue,extra)
-        a,b=st.columns(2);a.download_button('A4 인쇄 HTML',html,file_name=f'{x["year"]}_{company["name"]}_공사수입원가대비.html',mime='text/html',use_container_width=True);b.download_button('검산 Excel',xlsx,file_name=f'{x["year"]}_{company["name"]}_공사수입원가대비.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',use_container_width=True)
-        components.html(html,height=800,scrolling=True)
+        a,b=st.columns(2);a.download_button('A4 인쇄 HTML',html,file_name=f'{x["year"]}_{company["name"]}_공사수입원가대비.html',mime='text/html',use_container_width=True);b.download_button('검산·차기이월 Excel',xlsx,file_name=f'{x["year"]}_{company["name"]}_공사수입원가대비.xlsx',mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',use_container_width=True);components.html(html,height=800,scrolling=True)
 
 def income_summary_page(c,x,company):
     adjustments,inc,tax,reserves=computed(c,x,company);st.caption('영업외수익은 잡이익 원장만 적요로 감면·기타 구분합니다. 영업외비용 전체 합계는 장부금액에서 손금불산입을 빼고 손금산입을 더하며, 감면분·기타분은 직접 입력합니다.')
