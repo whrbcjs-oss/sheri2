@@ -175,8 +175,7 @@ def summary(rows,extra=None):
     active=[recalculate(r) for r in rows if not r.get('deleted')];extra=extra or {}
     table_revenue=sum(num(r.get('current_revenue')) for r in active);prior=sum(num(r.get('prior_adjustment')) for r in active);current=sum(final_adjustment(r) for r in active)
     prior_unfinished=sum(num(r.get('prior_unfinished')) for r in active);current_unfinished=sum(num(r.get('current_unfinished')) for r in active)
-    vat_revenue=num(extra.get('ledger_construction_revenue'));adjusted_progress_revenue=table_revenue+current
-    vat_progress_difference=adjusted_progress_revenue-vat_revenue
+    vat_progress_difference=-(prior+current)
     manual=num(extra.get('manual_adjustment'))
     tax_flow=-prior+current+prior_unfinished-current_unfinished+manual
-    return dict(table_revenue=table_revenue,prior_adjustment=prior,current_adjustment=current,prior_unfinished=prior_unfinished,current_unfinished=current_unfinished,vat_revenue=vat_revenue,adjusted_progress_revenue=adjusted_progress_revenue,vat_progress_difference=vat_progress_difference,manual_adjustment=manual,expected_adjustment=current,tax_flow_adjustment=tax_flow,missing_rates=sum(1 for r in active if not rate(r.get('expected_cost_rate')) and not completed(r.get('status'))))
+    return dict(table_revenue=table_revenue,prior_adjustment=prior,current_adjustment=current,prior_unfinished=prior_unfinished,current_unfinished=current_unfinished,vat_progress_difference=vat_progress_difference,manual_adjustment=manual,expected_adjustment=current,tax_flow_adjustment=tax_flow,missing_rates=sum(1 for r in active if not rate(r.get('expected_cost_rate')) and not completed(r.get('status'))))

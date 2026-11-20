@@ -64,12 +64,13 @@ class ProgressAllocationTests(unittest.TestCase):
         plan=progress.allocate([row],200,'cost')
         self.assertEqual(plan['allocated'],200);self.assertEqual(plan['residual'],0)
 
-    def test_vat_progress_difference_is_calculated_not_manually_entered(self):
-        row=project(1,'자동계산');row['allocated_adjustment']=300
-        summary=progress.summary([row],{'ledger_construction_revenue':1500,'vat_adjustment':999999})
-        self.assertEqual(summary['adjusted_progress_revenue'],1300)
-        self.assertEqual(summary['vat_progress_difference'],-200)
+    def test_vat_progress_difference_is_prior_plus_current_adjustment(self):
+        row=project(1,'자동계산');row['prior_adjustment']=505524750;row['allocated_adjustment']=283877540
+        summary=progress.summary([row],{'ledger_construction_revenue':999999999,'vat_adjustment':999999})
+        self.assertEqual(summary['vat_progress_difference'],-789402290)
         self.assertNotIn('vat_adjustment',summary)
+        row['prior_adjustment']=194635430;row['allocated_adjustment']=5564137100
+        self.assertEqual(progress.summary([row])['vat_progress_difference'],-5758772530)
 
     def test_export_contains_reimportable_next_year_sheet(self):
         rows = [project(1, '이월공사')]
@@ -79,8 +80,9 @@ class ProgressAllocationTests(unittest.TestCase):
         book = openpyxl.load_workbook(BytesIO(blob), data_only=True)
         self.assertIn('2027 차기이월', book.sheetnames)
         linked={row[0]:row[1] for row in book['흐름표 연동'].iter_rows(min_row=2,values_only=True)}
-        self.assertEqual(linked['조정 후 진행률수입'],2000)
-        self.assertEqual(linked['당기 작업진행률차이'],500)
+        self.assertEqual(linked['전기진행율 합계'],0)
+        self.assertEqual(linked['당기진행율 합계'],1000)
+        self.assertEqual(linked['VAT 신고 작업진행률 수입차액 조정 후 차액'],-1000)
         sheet, parsed = progress.parse(blob, 2027, '테스트건설', '2027 차기이월')
         self.assertEqual(sheet, '2027 차기이월')
         self.assertEqual(len(parsed), 1)
