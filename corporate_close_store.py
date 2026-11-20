@@ -611,20 +611,25 @@ def save_progress_import(c,x,name,sheet_name,content,projects):
             key=str(p.get('project_key') or '|'.join([normalized(p.get('client')),normalized(p.get('project')),normalized(p.get('start'))]))
             existing=c.execute('SELECT id,allocation_mode FROM cc_progress_projects WHERE case_id=? AND project_key=? ORDER BY deleted,id LIMIT 1',(x['id'],key)).fetchone()
             values=[p.get(k,'' if k in text_fields else 0) for k in base_fields]
-            carry=int(p.get('carryover_eligible',0 if '준공' in normalized(p.get('status')) else 1))
+            is_completed='준공' in normalized(p.get('status'));carry=int(p.get('carryover_eligible',0 if is_completed else 1));carry=0 if is_completed else carry
             if existing:
                 clear_allocation=',allocated_adjustment=NULL' if existing[1]!='fixed' else ''
-                c.execute('UPDATE cc_progress_projects SET import_id=?,'+','.join(k+'=?' for k in base_fields)+',project_key=?,carryover_eligible=?,import_missing=0,deleted=0,version=version+1'+clear_allocation+' WHERE id=?',(iid,*values,key,carry,existing[0]))
+                force_exclude=",allocation_mode='exclude'" if is_completed else ''
+                c.execute('UPDATE cc_progress_projects SET import_id=?,'+','.join(k+'=?' for k in base_fields)+',project_key=?,carryover_eligible=?,import_missing=0,deleted=0,version=version+1'+clear_allocation+force_exclude+' WHERE id=?',(iid,*values,key,carry,existing[0]))
             else:
-                c.execute('INSERT INTO cc_progress_projects(case_id,import_id,'+','.join(base_fields)+',project_key,allocation_mode,allocated_adjustment,carryover_eligible,import_missing) VALUES(?,?,'+','.join('?' for _ in base_fields)+',?,?,?,?,0)',(x['id'],iid,*values,key,p.get('allocation_mode','auto'),p.get('allocated_adjustment'),carry))
+                c.execute('INSERT INTO cc_progress_projects(case_id,import_id,'+','.join(base_fields)+',project_key,allocation_mode,allocated_adjustment,carryover_eligible,import_missing) VALUES(?,?,'+','.join('?' for _ in base_fields)+',?,?,?,?,0)',(x['id'],iid,*values,key,'exclude' if is_completed else p.get('allocation_mode','auto'),p.get('allocated_adjustment'),carry))
     return iid
 def save_progress_project(c,x,id,expected,values):
     ensure_open(x);row=c.execute('SELECT version FROM cc_progress_projects WHERE id=? AND case_id=?',(id,x['id'])).fetchone()
     if not row or row[0]!=expected:raise ValueError('현장 자료가 변경되었습니다. 다시 불러오세요.')
+    values=dict(values)
+    if '준공' in normalized(values.get('status')):values['allocation_mode']='exclude';values['carryover_eligible']=0
     fields=['client','project','start','end','contract','prior_revenue','current_revenue','prior_cost','current_cost','expected_cost_rate','trade','status','prior_adjustment','current_adjustment','prior_unfinished','current_unfinished','note','allocation_mode','allocated_adjustment','carryover_eligible','carryover_note'];text_fields={'client','project','start','end','trade','status','note','allocation_mode','carryover_note'}
     with c:c.execute('UPDATE cc_progress_projects SET '+','.join(k+'=?' for k in fields)+',version=version+1,deleted=0 WHERE id=?',(*[values.get(k,'' if k in text_fields else 0) for k in fields],id))
 def add_progress_project(c,x,values):
-    ensure_open(x);fields=['client','project','start','end','contract','prior_revenue','current_revenue','prior_cost','current_cost','expected_cost_rate','trade','status','prior_adjustment','current_adjustment','prior_unfinished','current_unfinished','note','allocation_mode','allocated_adjustment','carryover_eligible','carryover_note']
+    ensure_open(x);values=dict(values)
+    if '준공' in normalized(values.get('status')):values['allocation_mode']='exclude';values['carryover_eligible']=0
+    fields=['client','project','start','end','contract','prior_revenue','current_revenue','prior_cost','current_cost','expected_cost_rate','trade','status','prior_adjustment','current_adjustment','prior_unfinished','current_unfinished','note','allocation_mode','allocated_adjustment','carryover_eligible','carryover_note']
     key=str(values.get('project_key') or '|'.join([normalized(values.get('client')),normalized(values.get('project')),normalized(values.get('start'))]))
     if c.execute('SELECT 1 FROM cc_progress_projects WHERE case_id=? AND project_key=? AND deleted=0',(x['id'],key)).fetchone():raise ValueError('같은 공사관리번호의 현장이 이미 있습니다.')
     text_fields={'client','project','start','end','trade','status','note','allocation_mode','carryover_note'}

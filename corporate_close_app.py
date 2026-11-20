@@ -19,7 +19,7 @@ import corporate_close_capital as capital
 import corporate_progress as progress
 import corporate_progress_report as progress_report
 
-VERSION='2026.11.20.44'
+VERSION='2026.11.20.45'
 ADJUSTMENT_SUBPAGES=['세금과공과명세서','선급비용명세서','기업업무추진비명세서']
 PAGES=['대시보드','법인세 계산 흐름표','기초정보입력','공사수입·원가대비','세무조정 항목',*ADJUSTMENT_SUBPAGES,'소득구분계산서','세액 계산','유보잔액 관리','결산 확정·출력','경영상태비율 점검','실질자본금 점검','기업진단지침 관리','법인·업종 설정']
 VALUE_FIELDS=[('construction_revenue','공사수입'),('service_revenue','용역수입'),('progress_adjustment','진행률조정수입(예상)'),('cost','매출원가'),('sga','판매관리비'),('nonop_income','영업외수익'),('nonop_expense','영업외비용'),('prior_sales','전기매출'),('prior_progress','전기 진행률 수입조정'),('prior_unfinished','전기 미완성공사'),('current_unfinished','당기 미완성공사')]
@@ -581,14 +581,19 @@ def progress_page(c,x,company):
     rows=db.progress_projects(c,x['id']);extra=dict(x.get('progress',{}));s=progress.summary(rows,extra);flow_revenue=money(x.get('values',{}).get('construction_revenue'));ledger_revenue=money(extra.get('ledger_construction_revenue',flow_revenue));flow_adjustment=money(x.get('values',{}).get('progress_adjustment'))
     tabs=st.tabs(['현장별 자동배분','현장별 진행률 검산','원가율·조정값 관리','업로드·변경 이력·차기이월','A4 출력·Excel'])
     with tabs[0]:
-        plan=progress.allocate(rows,flow_adjustment);cards=st.columns(5)
-        for col,label,value in zip(cards,['배분 목표','작업자 고정','자동배분 가능범위','배분안 합계','미배분 차액'],[plan['target'],plan['fixed'],plan['available'],plan['allocated'],plan['residual']]):col.metric(label,f'{value:,}원')
-        if plan['residual']:st.error(f'현장별 조정 가능범위가 부족하여 {plan["residual"]:,}원을 배분할 수 없습니다. 예상원가율·준공상태·작업자 고정값을 확인하세요.')
+        methods={'excel':'① Excel 당기조정액 그대로','cost':'② 목표 차액만 당기원가 비율로 배분','rate':'③ 예상원가율로 정밀 배분'};method=st.radio('배분 기준',list(methods),format_func=lambda key:methods[key],horizontal=True,key='progress_allocation_method');plan=progress.allocate(rows,flow_adjustment,method);cards=st.columns(5)
+        for col,label,value in zip(cards,['배분 목표','Excel 당기조정액 합계','목표와 Excel 차이','추가배분 가능범위','배분안 합계'],[plan['target'],plan['excel_total'],plan['difference'],plan['available'],plan['allocated']]):col.metric(label,f'{value:,}원')
+        if method=='excel' and plan['residual']:st.info(f'Excel 당기조정액을 그대로 적용하면 목표와 {plan["residual"]:,}원 차이납니다. 차이를 맞추려면 ② 차액 자동배분을 선택하세요.')
+        elif plan['residual']:st.error(f'선택한 기준으로 {plan["residual"]:,}원을 배분할 수 없습니다. 당기원가·계약잔액·준공상태·작업자 고정값을 확인하세요.')
         elif rows:st.success('예상 진행률조정 총액과 현장별 배분안 합계가 일치합니다.')
-        allocation_view=[{'공사관리번호':r['project_key'],'발주처':r['client'],'공사명':r['project'],'상태':r['status'],'배분방식':r['allocation_mode'],'자동판정':r['allocation_reason'],'적정조정액':r['natural_adjustment'],'최소':r['minimum_adjustment'],'최대':r['maximum_adjustment'],'배분안':r['proposed_adjustment'],'차기이월':'Y' if r.get('carryover_eligible') else 'N'} for r in plan['rows']]
-        show_frame(pd.DataFrame(allocation_view),hide_index=True,use_container_width=True,column_config={k:st.column_config.NumberColumn(format='%,d') for k in ['적정조정액','최소','최대','배분안']})
-        if st.button('목표금액과 일치하는 자동배분안 저장',type='primary',disabled=not rows or bool(plan['residual']) or x['status']=='confirmed'):db.save_progress_allocations(c,x,plan['allocations']);refresh()
-        st.caption('진행 중이며 계약금액·예상원가율·누계수입·누계원가가 정상인 현장에만 적정 범위 안에서 배분합니다.')
+        allocation_view=[]
+        for r in plan['rows']:
+            reason=('예상원가율 확인' if method=='rate' and not r['rate_ready'] and r['eligible'] else r['allocation_reason'])
+            allocation_view.append({'공사관리번호':r['project_key'],'발주처':r['client'],'공사명':r['project'],'상태':r['status'],'배분방식':r['allocation_mode'],'자동판정':reason,'당기원가':r['current_cost'],'Excel당기조정액':r['current_adjustment'],'적정조정액':r['natural_adjustment'],'배분안':r['proposed_adjustment'],'차기이월':'Y' if r.get('carryover_eligible') else 'N'})
+        show_frame(pd.DataFrame(allocation_view),hide_index=True,use_container_width=True,column_config={k:st.column_config.NumberColumn(format='%,d') for k in ['당기원가','Excel당기조정액','적정조정액','배분안']})
+        save_label='Excel 당기조정액 그대로 저장' if method=='excel' else '목표금액과 일치하는 배분안 저장';can_save=bool(rows) and x['status']!='confirmed' and (method=='excel' or not plan['residual'])
+        if st.button(save_label,type='primary',disabled=not can_save):db.save_progress_allocations(c,x,plan['allocations']);refresh()
+        st.caption('예상원가율은 ③ 정밀 배분에서만 필요합니다. 기본은 Excel 금액을 사용하고, 목표와 차이가 있을 때만 ②에서 진행 중 현장의 당기원가 비율로 차액을 나눕니다.')
     with tabs[1]:
         cards=st.columns(5)
         for col,label,value in zip(cards,['원장 공사수입','현장표 당기 공사수입','공사수입 검산차이','당기진행율 배분합계','목표 대비 차이'],[ledger_revenue,s['table_revenue'],ledger_revenue-s['table_revenue'],s['current_adjustment'],flow_adjustment-s['current_adjustment']]):col.metric(label,f'{value:,}원')

@@ -50,6 +50,13 @@ class ProgressStoreTests(unittest.TestCase):
         self.assertEqual(len(rows),1);self.assertEqual(rows[0]['project'],'진행공사')
         self.assertEqual(rows[0]['prior_revenue'],1000);self.assertEqual(rows[0]['prior_adjustment'],200)
 
+    def test_status_containing_spaced_completion_forces_exclusion(self):
+        values={'client':'발주처','project':'띄어쓰기 준공','start':'2026-01-01','contract':1000,
+                'expected_cost_rate':.8,'status':'준 공 완 료','allocation_mode':'auto','carryover_eligible':1}
+        row_id=store.add_progress_project(self.c,self.case,values)
+        row=next(r for r in store.progress_projects(self.c,self.case['id']) if r['id']==row_id)
+        self.assertEqual(row['allocation_mode'],'exclude');self.assertFalse(row['carryover_eligible'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -109,35 +109,63 @@ def allocation_analysis(row):
     if x.get('deleted'):reasons.append('삭제 현장')
     if x.get('import_missing'):reasons.append('최근 업로드 누락')
     if completed(x.get('status')):reasons.append('준공 현장')
-    if not num(x.get('contract')):reasons.append('계약금액 없음')
-    if not rate(x.get('expected_cost_rate')):reasons.append('예상원가율 없음')
     if mode=='exclude':reasons.append('작업자 배분 제외')
     eligible=not reasons and mode!='fixed'
     minimum=min(0,natural) if eligible else 0;maximum=max(0,natural) if eligible else 0
     fixed=num(x.get('allocated_adjustment')) if mode=='fixed' else 0
-    return {**x,'project_key':project_key(x),'allocation_mode':mode,'eligible':eligible,'allocation_reason':' · '.join(reasons) if reasons else ('작업자 고정' if mode=='fixed' else '자동배분 가능'),'minimum_adjustment':minimum,'maximum_adjustment':maximum,'natural_adjustment':natural,'fixed_adjustment':fixed}
+    cost_ready=eligible and abs(num(x.get('current_cost')))>0
+    rate_ready=eligible and num(x.get('contract'))>0 and bool(rate(x.get('expected_cost_rate')))
+    reason=' · '.join(reasons) if reasons else ('작업자 고정' if mode=='fixed' else '차액배분 가능' if cost_ready else '당기원가 없음')
+    return {**x,'project_key':project_key(x),'allocation_mode':mode,'eligible':eligible,'cost_ready':cost_ready,'rate_ready':rate_ready,'allocation_reason':reason,'minimum_adjustment':minimum,'maximum_adjustment':maximum,'natural_adjustment':natural,'fixed_adjustment':fixed}
 
-def allocate(rows,target):
-    """Allocate a signed target only inside each eligible project's natural range."""
-    analyzed=[allocation_analysis(r) for r in rows if not r.get('deleted')];target=num(target)
-    fixed=sum(r['fixed_adjustment'] for r in analyzed);remaining=target-fixed;sign=1 if remaining>=0 else -1
-    capacities=[]
+def _weighted_spread(amount,candidates):
+    """Return positive integer shares using weights while respecting capacities."""
+    remaining=max(0,num(amount));shares={row_id:0 for row_id,_,_ in candidates};active=list(candidates)
+    while remaining and active:
+        total_weight=sum(max(1,weight) for _,weight,_ in active);progressed=0
+        for row_id,weight,capacity in active:
+            room=capacity-shares[row_id]
+            if room<=0:continue
+            share=min(room,max(1,(remaining*max(1,weight))//total_weight));share=min(share,remaining-progressed)
+            if share<=0:continue
+            shares[row_id]+=share;progressed+=share
+            if progressed>=remaining:break
+        remaining-=progressed;active=[item for item in active if shares[item[0]]<item[2]]
+        if not progressed:break
+    return shares,remaining
+
+def allocate(rows,target,method='excel'):
+    """Use Excel adjustments first; optionally spread only the difference."""
+    if method not in ['excel','cost','rate']:raise ValueError('배분 기준을 확인하세요.')
+    analyzed=[allocation_analysis(r) for r in rows if not r.get('deleted')];target=num(target);allocations={}
     for r in analyzed:
-        capacity=r['maximum_adjustment'] if sign>0 else abs(r['minimum_adjustment'])
-        if r['eligible'] and capacity>0:capacities.append((r,capacity))
-    available=sum(cap for _,cap in capacities);used=min(abs(remaining),available);allocations={r['id']:r['fixed_adjustment'] if r['allocation_mode']=='fixed' else 0 for r in analyzed if r.get('id') is not None}
-    distributed=0;fractions=[]
-    if available and used:
-        for r,capacity in capacities:
-            raw=used*capacity;share=raw//available;distributed+=share
-            allocations[r['id']]=sign*share;fractions.append((raw%available,capacity,r['id']))
-        for _,_,row_id in sorted(fractions,reverse=True)[:used-distributed]:allocations[row_id]+=sign
-    allocated=fixed+sign*used;residual=target-allocated
+        if r.get('id') is None:continue
+        if r['allocation_mode']=='fixed':allocations[r['id']]=r['fixed_adjustment']
+        elif not r['eligible']:allocations[r['id']]=0
+        else:allocations[r['id']]=num(r.get('current_adjustment')) if method in ['excel','cost'] else 0
+    excel_total=sum(allocations.values());difference=target-excel_total;available=0
+    if method=='cost' and difference:
+        sign=1 if difference>0 else -1;candidates=[]
+        for r in analyzed:
+            if not r.get('id') or not r['cost_ready'] or r['allocation_mode']!='auto':continue
+            base=allocations[r['id']]
+            capacity=max(0,num(r.get('contract'))-num(r.get('total_revenue'))-base) if sign>0 and num(r.get('contract')) else max(0,num(r.get('current_revenue'))+base) if sign<0 else 0
+            if capacity:candidates.append((r['id'],abs(num(r.get('current_cost'))),capacity));available+=capacity
+        shares,_=_weighted_spread(abs(difference),candidates)
+        for row_id,share in shares.items():allocations[row_id]+=sign*share
+    elif method=='rate':
+        allocations={r['id']:r['fixed_adjustment'] if r['allocation_mode']=='fixed' else 0 for r in analyzed if r.get('id') is not None};fixed=sum(allocations.values());difference=target-fixed;sign=1 if difference>=0 else -1;candidates=[]
+        for r in analyzed:
+            capacity=r['maximum_adjustment'] if sign>0 else abs(r['minimum_adjustment'])
+            if r.get('id') and r['rate_ready'] and r['allocation_mode']=='auto' and capacity:candidates.append((r['id'],capacity,capacity));available+=capacity
+        shares,_=_weighted_spread(abs(difference),candidates)
+        for row_id,share in shares.items():allocations[row_id]+=sign*share
+    allocated=sum(allocations.values());residual=target-allocated
     result=[]
     for r in analyzed:
         proposed=allocations.get(r.get('id'),r['fixed_adjustment'] if r['allocation_mode']=='fixed' else 0)
         result.append({**r,'proposed_adjustment':proposed})
-    return {'target':target,'fixed':fixed,'available':available,'allocated':allocated,'residual':residual,'rows':result,'allocations':allocations}
+    return {'method':method,'target':target,'excel_total':excel_total,'difference':target-excel_total,'fixed':sum(r['fixed_adjustment'] for r in analyzed),'available':available,'allocated':allocated,'residual':residual,'rows':result,'allocations':allocations}
 
 def final_adjustment(row):
     value=row.get('allocated_adjustment')
