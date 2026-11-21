@@ -1,7 +1,7 @@
 """Shared two-level navigation; existing program routing values stay compatible."""
 import streamlit as st
 
-VERSION = '2026.11.21.48'
+VERSION = '2026.11.21.49'
 HOME = '회계 신고 일정'
 REPORTS = ['엘비데크 월별보고', '자체결산 보고', '법인결산']
 PROGRAMS = [HOME] + REPORTS + ['공동도급 관리대장', '대여금관리', '한국은행 기업경기조사', '현장숙소(전·월세)관리', '주민세(사업소분) 관리']
