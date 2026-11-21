@@ -23,6 +23,16 @@ def project(row_id, name, natural_rate=.8, status='진행중', mode='auto', allo
 
 
 class ProgressAllocationTests(unittest.TestCase):
+    def test_legacy_import_removes_included_current_progress_from_revenue(self):
+        book=openpyxl.Workbook();sheet=book.active;sheet.title='2026 테스트건설'
+        sheet.cell(1,1,'발주처');sheet.cell(1,2,'공사명')
+        sheet.cell(5,1,'발주처A');sheet.cell(5,2,'공사A');sheet.cell(5,3,'2026-01-01');sheet.cell(5,4,20000000000);sheet.cell(5,5,1000000000);sheet.cell(5,6,10298189412);sheet.cell(5,7,11298189412);sheet.cell(5,9,'전기진행율');sheet.cell(5,10,0)
+        sheet.cell(6,3,'2027-12-31');sheet.cell(6,5,800000000);sheet.cell(6,6,4000000000);sheet.cell(6,7,4800000000);sheet.cell(6,8,'진행중');sheet.cell(6,9,'당기진행율');sheet.cell(6,10,4430047500)
+        buffer=BytesIO();book.save(buffer);_,rows=progress.parse(buffer.getvalue(),2026,'테스트건설','2026 테스트건설')
+        self.assertEqual(rows[0]['current_revenue'],5868141912)
+        self.assertEqual(rows[0]['current_adjustment'],4430047500)
+        self.assertEqual(rows[0]['total_revenue'],6868141912)
+
     def test_target_is_distributed_inside_natural_limits(self):
         rows = [project(1, 'A'), project(2, 'B')]
         plan = progress.allocate(rows, 1500, 'rate')
@@ -73,7 +83,7 @@ class ProgressAllocationTests(unittest.TestCase):
         self.assertEqual(progress.summary([row])['vat_progress_difference'],-5758772530)
 
     def test_export_contains_reimportable_next_year_sheet(self):
-        rows = [project(1, '이월공사')]
+        rows = [project(1, '이월공사')];rows[0]['current_adjustment']=1000
         with patch.dict(sys.modules, {'streamlit': SimpleNamespace()}):
             report = importlib.import_module('corporate_progress_report')
         blob = report.workbook('테스트건설', 2026, rows, 1000, {'ledger_construction_revenue':1500})

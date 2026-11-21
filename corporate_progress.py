@@ -79,11 +79,16 @@ def parse(blob,year,company,sheet_name=None):
             j=num(s.cell(r,10).value);j2=num(s.cell(r+1,10).value)
             status=text(s.cell(r+1,8).value);actual_rate=(num(s.cell(r+1,7).value)/num(s.cell(r,7).value)) if num(s.cell(r,7).value) else 0
             helper=expected.get(normalized(project),{});exp=helper.get('rate',0)
+            imported_adjustment=j if label=='당기진행율' else j2 if label2=='당기진행율' else 0
+            # The approved legacy workbook's current revenue already includes
+            # its current progress amount. Store the pre-adjustment revenue so
+            # a newly selected target is not counted a second time.
+            reported_current=helper.get('current_revenue',num(s.cell(r,6).value));base_current=reported_current-imported_adjustment
             item=dict(source_row=r,client=client,project=project,start=text(s.cell(r,3).value),end=text(s.cell(r+1,3).value),contract=helper.get('contract') or contract,
-                prior_revenue=helper.get('prior_revenue',num(s.cell(r,5).value)),current_revenue=helper.get('current_revenue',num(s.cell(r,6).value)),total_revenue=num(s.cell(r,7).value),
+                prior_revenue=helper.get('prior_revenue',num(s.cell(r,5).value)),current_revenue=base_current,total_revenue=num(s.cell(r,7).value),
                 prior_cost=helper.get('prior_cost',num(s.cell(r+1,5).value)),current_cost=helper.get('current_cost',num(s.cell(r+1,6).value)),total_cost=num(s.cell(r+1,7).value),
                 actual_cost_rate=actual_rate,expected_cost_rate=exp,trade=text(s.cell(r,11).value or s.cell(r+1,11).value),status=status,
-                prior_adjustment=j if label=='전기진행율' else 0,current_adjustment=(j if label=='당기진행율' else j2 if label2=='당기진행율' else 0),
+                prior_adjustment=j if label=='전기진행율' else 0,current_adjustment=imported_adjustment,
                 prior_unfinished=j if label=='전기미완성' else 0,current_unfinished=j2 if label2=='당기미완성' else 0,note='',allocation_mode='auto',allocated_adjustment=None)
             item['project_key']=project_key(item);item['carryover_eligible']=int(not completed(status))
             out.append(recalculate(item));r+=2;continue
@@ -169,7 +174,10 @@ def allocate(rows,target,method='excel'):
 
 def final_adjustment(row):
     value=row.get('allocated_adjustment')
-    return num(value) if value is not None else num(recalculate(row).get('calculated_adjustment'))
+    # Until the worker saves a target/allocation, the Excel current-progress
+    # amount remains the working target. Expected-rate calculation is a review
+    # suggestion and must not silently replace the imported amount.
+    return num(value) if value is not None else num(row.get('current_adjustment'))
 
 def summary(rows,extra=None):
     active=[recalculate(r) for r in rows if not r.get('deleted')];extra=extra or {}
