@@ -79,6 +79,9 @@ def connect():
       id INTEGER PRIMARY KEY CHECK(id=1),audit_firm TEXT NOT NULL DEFAULT '',auditor_name TEXT NOT NULL DEFAULT '',
       auditor_phone TEXT NOT NULL DEFAULT '',auditor_email TEXT NOT NULL DEFAULT '',auditor_address TEXT NOT NULL DEFAULT '',
       version INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS bc_account_types(
+      id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,sort_order INTEGER NOT NULL DEFAULT 0,
+      version INTEGER NOT NULL DEFAULT 1,deleted INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS bc_counterparties(
       id INTEGER PRIMARY KEY,company_name TEXT NOT NULL,year INTEGER NOT NULL,counterparty TEXT NOT NULL,
       business_no TEXT NOT NULL DEFAULT '',balance_side TEXT NOT NULL,account TEXT NOT NULL,balance INTEGER NOT NULL,
@@ -102,11 +105,16 @@ def connect():
       UNIQUE(company_name,year,counterparty));
     CREATE INDEX IF NOT EXISTS bc_dispatch_case ON bc_dispatches(company_name,year,status);
     ''')
+    profile_columns={row[1] for row in c.execute('PRAGMA table_info(bc_profiles)')}
+    if 'representative' not in profile_columns:c.execute("ALTER TABLE bc_profiles ADD COLUMN representative TEXT NOT NULL DEFAULT ''")
+    if 'fax' not in profile_columns:c.execute("ALTER TABLE bc_profiles ADD COLUMN fax TEXT NOT NULL DEFAULT ''")
+    for name,order in [('공사미수금',10),('미수금',20)]:c.execute('INSERT OR IGNORE INTO bc_account_types(name,sort_order) VALUES(?,?)',(name,order))
     if not c.execute('SELECT 1 FROM bc_audit_profile WHERE id=1').fetchone():
         old = c.execute("""SELECT audit_firm,auditor_name,auditor_phone,auditor_email,auditor_address FROM bc_profiles
           WHERE audit_firm<>'' OR auditor_email<>'' ORDER BY company_name LIMIT 1""").fetchone()
         if old: c.execute('INSERT INTO bc_audit_profile VALUES(1,?,?,?,?,?,1)', tuple(old))
         else: c.execute('INSERT INTO bc_audit_profile(id) VALUES(1)')
+    for operation in ('INSERT','UPDATE','DELETE'):c.execute(f'DROP TRIGGER IF EXISTS audit_bc_profiles_{operation}')
     c.commit()
     return shared.protect(c)
 
@@ -128,11 +136,9 @@ def company_names():
 
 def profile(c, company_name):
     row = c.execute('SELECT * FROM bc_profiles WHERE company_name=?', (company_name,)).fetchone()
-    fields = ('company_name', 'business_no', 'address', 'company_contact', 'company_phone', 'company_email',
-              'audit_firm', 'auditor_name', 'auditor_phone', 'auditor_email', 'auditor_address', 'version')
-    result = dict(zip(fields, row)) if row else dict(company_name=company_name, business_no='', address='',
+    result = dict(row) if row else dict(company_name=company_name, business_no='', address='',
         company_contact='', company_phone='', company_email='', audit_firm='', auditor_name='', auditor_phone='',
-        auditor_email='', auditor_address='', version=0)
+        auditor_email='', auditor_address='', representative='',fax='',version=0)
     audit = c.execute('SELECT audit_firm,auditor_name,auditor_phone,auditor_email,auditor_address,version FROM bc_audit_profile WHERE id=1').fetchone()
     if audit:
         for key, value in zip(('audit_firm','auditor_name','auditor_phone','auditor_email','auditor_address','audit_version'), audit): result[key] = value
@@ -148,27 +154,27 @@ def save_profile(c, company_name, values, expected, audit_expected=None):
     if audit_expected is not None and current['audit_version'] != int(audit_expected):
         raise ValueError('공통 공인회계법인 정보가 다른 작업자에 의해 변경되었습니다. 다시 불러오세요.')
     data = {k: clean(values.get(k, ''), 500 if 'address' in k else 250) for k in
-            ('business_no', 'address', 'company_contact', 'company_phone', 'company_email', 'audit_firm',
+            ('business_no', 'representative', 'address', 'company_contact', 'company_phone', 'fax', 'company_email', 'audit_firm',
              'auditor_name', 'auditor_phone', 'auditor_email', 'auditor_address')}
     for key in ('company_email', 'auditor_email'):
         if data[key]:
             data[key] = valid_email(data[key])
     with c:
         if current['version']:
-            c.execute('''UPDATE bc_profiles SET business_no=?,address=?,company_contact=?,company_phone=?,company_email=?,
+            c.execute('''UPDATE bc_profiles SET business_no=?,representative=?,address=?,company_contact=?,company_phone=?,fax=?,company_email=?,
               audit_firm=?,auditor_name=?,auditor_phone=?,auditor_email=?,auditor_address=?,version=version+1
               WHERE company_name=? AND version=?''', tuple(data[k] for k in data) + (company_name, expected))
         else:
-            c.execute('''INSERT INTO bc_profiles(company_name,business_no,address,company_contact,company_phone,company_email,
-              audit_firm,auditor_name,auditor_phone,auditor_email,auditor_address) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
+            c.execute('''INSERT INTO bc_profiles(company_name,business_no,representative,address,company_contact,company_phone,fax,company_email,
+              audit_firm,auditor_name,auditor_phone,auditor_email,auditor_address) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
               (company_name,) + tuple(data[k] for k in data))
         c.execute('''UPDATE bc_audit_profile SET audit_firm=?,auditor_name=?,auditor_phone=?,auditor_email=?,
           auditor_address=?,version=version+1 WHERE id=1''', tuple(data[k] for k in
           ('audit_firm','auditor_name','auditor_phone','auditor_email','auditor_address')))
 
 
-def joint_companies():
-    """Return every reusable joint-venture company field; missing values stay editable."""
+def joint_company_profiles():
+    """Return own/related-company profiles for audited company master data."""
     try:
         import joint_store
         c = joint_store.connect()
@@ -177,15 +183,42 @@ def joint_companies():
             for row in joint_store.companies(c):
                 try: info=json.loads(row.get('info') or '{}')
                 except (TypeError,json.JSONDecodeError): info={}
+                if info.get('회사구분') not in ('당사','관계사'):continue
                 email=c.execute('''SELECT e.email FROM jv_member_emails e JOIN jv_members m ON m.id=e.member_id
                   WHERE m.company_id=? AND TRIM(e.email)<>'' ORDER BY e.member_id DESC LIMIT 1''',(row['id'],)).fetchone()
                 result.append({'name':row['name'],'code':row['code'],'business_no':info.get('사업자등록번호',''),
-                  'contact_name':info.get('담당자',''),'email':email[0] if email else '',
-                  'phone':info.get('담당자 연락처') or info.get('전화',''),'address':info.get('주소','')})
+                  'representative':info.get('대표자',''),'company_contact':info.get('담당자',''),'company_email':email[0] if email else '',
+                  'company_phone':info.get('전화',''),'contact_phone':info.get('담당자 연락처',''),'fax':info.get('팩스',''),'address':info.get('주소','')})
             return result
         finally: c.close()
     except Exception:
         return []
+
+
+def account_types(c, include_deleted=False):
+    sql='SELECT * FROM bc_account_types'+('' if include_deleted else ' WHERE deleted=0')+' ORDER BY sort_order,id'
+    return rows(c,sql)
+
+
+def save_account_type(c,name,id=None,expected=None):
+    name=clean(name,100)
+    if not name:raise ValueError('계정과목명을 입력하세요.')
+    try:
+        with c:
+            if id:
+                current=c.execute('SELECT version FROM bc_account_types WHERE id=? AND deleted=0',(int(id),)).fetchone()
+                if not current or expected is not None and current[0]!=int(expected):raise ValueError('계정과목이 변경되었습니다. 다시 불러오세요.')
+                c.execute('UPDATE bc_account_types SET name=?,version=version+1 WHERE id=?',(name,int(id)));return int(id)
+            order=c.execute('SELECT COALESCE(MAX(sort_order),0)+10 FROM bc_account_types').fetchone()[0]
+            return c.execute('INSERT INTO bc_account_types(name,sort_order) VALUES(?,?)',(name,order)).lastrowid
+    except sqlite3.IntegrityError as exc:raise ValueError('이미 등록된 계정과목입니다.') from exc
+
+
+def delete_account_type(c,id,expected):
+    row=c.execute('SELECT name,version FROM bc_account_types WHERE id=? AND deleted=0',(int(id),)).fetchone()
+    if not row or row[1]!=int(expected):raise ValueError('계정과목이 변경되었습니다. 다시 불러오세요.')
+    if c.execute('SELECT 1 FROM bc_counterparties WHERE account=? AND deleted=0 LIMIT 1',(row[0],)).fetchone():raise ValueError('거래처 잔액에서 사용 중인 계정과목은 삭제할 수 없습니다.')
+    with c:c.execute('UPDATE bc_account_types SET deleted=1,version=version+1 WHERE id=?',(int(id),))
 
 
 def counterparties(c, company_name, year, include_deleted=False):
@@ -203,14 +236,11 @@ def _validated_record(row, company_name, year):
     account = clean(row.get('계정과목', row.get('account', '')), 200)
     if not counterparty or not account:
         raise ValueError('거래처명과 계정과목은 반드시 입력하세요.')
-    side = clean(row.get('구분', row.get('balance_side', '미분류')), 20) or '미분류'
-    if side not in SIDES:
-        raise ValueError(f'{counterparty}의 구분은 채권·채무·미분류 중에서 선택하세요.')
     email = clean(row.get('메일주소', row.get('email', '')), 254)
     if email:
         email = valid_email(email)
     return dict(company_name=company_name, year=int(year), counterparty=counterparty,
-        business_no=clean(row.get('사업자번호', row.get('business_no', '')), 50), balance_side=side,
+        business_no=clean(row.get('사업자번호', row.get('business_no', '')), 50), balance_side='채권',
         account=account, balance=abs(amount(row.get('채권채무 잔액', row.get('balance', 0)))),
         contact_name=clean(row.get('담당자명', row.get('contact_name', '')), 100), email=email,
         phone=clean(row.get('연락처', row.get('phone', '')), 100), address=clean(row.get('주소', row.get('address', '')), 500),
@@ -245,7 +275,7 @@ def save_counterparty_rows(c, company_name, year, records, remove_ids=()):
 
 def save_counterparty_record(c, company_name, year, values, id=None, expected=None):
     row = _validated_record(values, company_name, year)
-    row['source'] = '공동도급 업체명 불러오기' if values.get('joint_lookup') else '직접 입력'
+    row['source'] = '직접 입력'
     data = tuple(row[k] for k in ('counterparty','business_no','balance_side','account','balance','contact_name','email','phone','address','note','source'))
     try:
         with c:
@@ -299,7 +329,9 @@ def _column_map(columns):
     return result
 
 
-def parse_upload(filename, payload):
+def parse_upload(filename, payload, account):
+    account=clean(account,100)
+    if not account:raise ValueError('업로드 자료에 적용할 계정과목을 먼저 선택하세요.')
     name = str(filename).lower()
     if name.endswith('.csv'):
         last = None
@@ -317,31 +349,16 @@ def parse_upload(filename, payload):
         raise ValueError('아마란스 자료는 XLSX 또는 CSV 파일로 올려주세요.')
     frame = frame.dropna(how='all').copy()
     mapping = _column_map(frame.columns)
-    missing = [key for key in ('거래처명', '계정과목') if key not in mapping]
-    if not any(key in mapping for key in ('채권잔액','채무잔액','채권채무 잔액','차변잔액','대변잔액')): missing.append('채권잔액')
+    missing = [key for key in ('거래처명','채권잔액') if key not in mapping]
     if missing:
         raise ValueError('필수 열을 찾지 못했습니다: ' + ', '.join(missing))
     result = []
     for _, source in frame.iterrows():
         counterparty = source.get(mapping['거래처명'])
-        account = source.get(mapping['계정과목'])
-        if pd.isna(counterparty) or pd.isna(account) or not str(counterparty).strip() or not str(account).strip():
+        if pd.isna(counterparty) or not str(counterparty).strip():
             continue
-        debit = amount(source.get(mapping.get('차변잔액'))) if mapping.get('차변잔액') else 0
-        credit = amount(source.get(mapping.get('대변잔액'))) if mapping.get('대변잔액') else 0
-        if mapping.get('채권잔액'):
-            side = '채권'; balance = abs(amount(source.get(mapping['채권잔액'])))
-        elif mapping.get('채무잔액'):
-            side = '채무'; balance = abs(amount(source.get(mapping['채무잔액'])))
-        else:
-            raw_side = source.get(mapping.get('구분')) if mapping.get('구분') else ''
-            side = str(raw_side).strip() if not pd.isna(raw_side) else ''
-            if side not in SIDES: side = infer_side(account, debit, credit)
-        if not mapping.get('채권잔액') and not mapping.get('채무잔액') and mapping.get('채권채무 잔액'):
-            balance = abs(amount(source.get(mapping['채권채무 잔액'])))
-        elif not mapping.get('채권잔액') and not mapping.get('채무잔액') and not mapping.get('채권채무 잔액'):
-            balance = abs(debit - credit)
-        row = {'거래처명': str(counterparty).strip(), '계정과목': str(account).strip(), '구분': side,
+        balance=abs(amount(source.get(mapping['채권잔액'])))
+        row = {'거래처명': str(counterparty).strip(), '계정과목': account, '구분': '채권',
                '채권채무 잔액': balance, 'source': f'아마란스 · {filename}'}
         for target in ('사업자번호', '담당자명', '메일주소', '연락처', '주소', '비고'): row[target] = ''
         result.append(row)
@@ -355,15 +372,12 @@ def group_counterparties(c, company_name, year):
     for row in counterparties(c, company_name, year):
         group = grouped.setdefault(row['counterparty'], {'counterparty': row['counterparty'], 'business_no': row['business_no'],
             'contact_name': row['contact_name'], 'email': row['email'], 'phone': row['phone'], 'address': row['address'],
-            'lines': [], 'total': 0, 'side': row['balance_side'], 'needs_review': False})
+            'lines': [], 'total': 0, 'side': '채권', 'needs_review': False})
         for field in ('business_no', 'contact_name', 'email', 'phone', 'address'):
             if not group[field] and row[field]:
                 group[field] = row[field]
         group['lines'].append({'account': row['account'], 'side': row['balance_side'], 'balance': row['balance'], 'note': row['note']})
         group['total'] += row['balance']
-        if row['balance_side'] == '미분류' or (group['side'] != row['balance_side'] and row['balance_side'] != '미분류'):
-            group['needs_review'] = True
-            group['side'] = '혼합'
     return list(grouped.values())
 
 

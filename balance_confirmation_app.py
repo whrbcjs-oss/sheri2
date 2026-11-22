@@ -47,24 +47,45 @@ def summary_panel(c, company, year):
     with st.container(key='bc_metrics'):
         cols = st.columns(4)
         cols[0].metric('대상 거래처', f"{values['parties']:,}개", f"메일 누락 {values['missing_email']:,}개")
-        cols[1].metric('채권 잔액', money(values['receivable']))
-        cols[2].metric('채무 잔액', money(values['payable']))
+        cols[1].metric('공사미수금 등 채권 잔액', money(values['receivable']))
+        cols[2].metric('등록 계정과목', f"{len(db.account_types(c)):,}개")
         rate = round(values['replied'] / values['sent'] * 100) if values['sent'] else 0
         cols[3].metric('발송 / 회신', f"{values['sent']:,} / {values['replied']:,}건", f'회신율 {rate}%')
 
 
 def counterparties_tab(c, company, year):
-    st.html('<div class="bc-title">① 거래처·채권채무 잔액</div>')
-    st.caption('아마란스에서는 거래처명·계정과목·채권잔액만 읽습니다. 사업자번호·담당자·메일·연락처·주소는 공동도급관리대장에서 불러오거나 직접 입력하며, 기존 수동 입력값은 재업로드해도 유지됩니다.')
+    st.html('<div class="bc-title">① 거래처·채권 잔액</div>')
+    st.caption('모든 자료는 채권으로 관리합니다. 아마란스 파일에서는 거래처명·채권잔액만 읽고, 담당자·메일·연락처·주소는 등록 후 직접 입력합니다.')
+    accounts = db.account_types(c)
+    account_names = [row['name'] for row in accounts]
+    with st.expander('계정과목 관리', expanded=not account_names):
+        st.caption('기본 계정은 공사미수금·미수금입니다. 필요한 채권 계정을 추가할 수 있습니다.')
+        selected_type = st.selectbox('등록된 계정과목', [None] + accounts,
+            format_func=lambda x: '새 계정과목 추가' if x is None else x['name'], key='bc_account_type_pick')
+        a, b, d = st.columns([2.4, .8, .8])
+        type_name = a.text_input('계정과목명', selected_type['name'] if selected_type else '', key=f"bc_account_type_name_{selected_type['id'] if selected_type else 0}")
+        if b.button('저장', type='primary', use_container_width=True, key='bc_account_type_save'):
+            try:
+                db.save_account_type(c, type_name, selected_type['id'] if selected_type else None, selected_type['version'] if selected_type else None)
+                st.session_state['_bc_notice'] = ('success', '계정과목을 저장했습니다.'); st.rerun()
+            except (ValueError, PermissionError) as exc: st.error(str(exc))
+        if d.button('삭제', disabled=selected_type is None, use_container_width=True, key='bc_account_type_delete'):
+            try:
+                db.delete_account_type(c, selected_type['id'], selected_type['version'])
+                st.session_state['_bc_notice'] = ('success', '계정과목을 삭제했습니다.'); st.rerun()
+            except (ValueError, PermissionError) as exc: st.error(str(exc))
+    if not account_names:
+        st.warning('업로드 전에 계정과목을 등록하세요.'); return
+    upload_account = st.selectbox('업로드 자료에 적용할 계정과목', account_names, key=f'bc_upload_account_{company}_{year}')
     uploaded = st.file_uploader('아마란스 거래처별 잔액 XLSX 또는 CSV', type=['xlsx', 'xlsm', 'csv'], key=f'bc_upload_{company}_{year}')
     if uploaded:
         digest = hashlib.sha256(uploaded.getvalue()).hexdigest()
         cache_key = f'_bc_import_{company}_{year}'
         cached = st.session_state.get(cache_key)
-        if not cached or cached['digest'] != digest:
+        if not cached or cached['digest'] != digest or cached.get('account') != upload_account:
             try:
-                parsed = db.parse_upload(uploaded.name, uploaded.getvalue())
-                st.session_state[cache_key] = {'digest': digest, 'name': uploaded.name, 'rows': parsed}
+                parsed = db.parse_upload(uploaded.name, uploaded.getvalue(), upload_account)
+                st.session_state[cache_key] = {'digest': digest, 'account': upload_account, 'name': uploaded.name, 'rows': parsed}
             except ValueError as exc:
                 st.error(str(exc)); parsed = []
         else:
@@ -72,12 +93,12 @@ def counterparties_tab(c, company, year):
         if parsed:
             st.success(f'{uploaded.name}에서 {len(parsed):,}개 계정 행을 찾았습니다.')
             with st.expander('가져올 계정 미리보기', expanded=True):
-                widths=[2.1,1.6,.8,1.25]
+                widths=[2.1,1.6,1.25]
                 with st.container(key='bc_import_head'):
-                    cols=st.columns(widths);labels=['거래처명','계정과목','구분','채권잔액']
+                    cols=st.columns(widths);labels=['거래처명','계정과목','채권잔액']
                     for col,label in zip(cols,labels):col.html(f'<div class="bc-account-head">{label}</div>')
                 for index,row in enumerate(parsed[:20]):
-                    cols=st.columns(widths);cols[0].write(row['거래처명']);cols[1].write(row['계정과목']);cols[2].write(row['구분']);cols[3].write(f"{row['채권채무 잔액']:,}원")
+                    cols=st.columns(widths);cols[0].write(row['거래처명']);cols[1].write(row['계정과목']);cols[2].write(f"{row['채권채무 잔액']:,}원")
                 if len(parsed)>20:st.caption(f'나머지 {len(parsed)-20:,}개 행은 등록 후 아래 목록에서 검색할 수 있습니다.')
             if st.button('가져온 자료 등록·갱신', type='primary', key='bc_import_save'):
                 try:
@@ -88,9 +109,9 @@ def counterparties_tab(c, company, year):
     records = db.counterparties(c, company, year)
     controls=st.columns([1.8,.8,.7])
     query=controls[0].text_input('업체명·계정과목 검색',key=f'bc_account_search_{company}_{year}')
-    filter_=controls[1].selectbox('조회 구분',['전체','입력 확인 필요','메일 누락','채권','채무'],key=f'bc_account_filter_{company}_{year}')
+    filter_=controls[1].selectbox('조회 상태',['전체','입력 확인 필요','메일 누락'],key=f'bc_account_filter_{company}_{year}')
     if controls[2].button('새 항목 추가',type='primary',use_container_width=True,key='bc_account_new'):
-        st.session_state['bc_account_selected_id']=0;st.session_state.pop('_bc_joint_prefill',None);st.rerun()
+        st.session_state['bc_account_selected_id']=0;st.rerun()
     visible=[]
     for row in records:
         searchable=(row['counterparty']+' '+row['account']).casefold()
@@ -98,56 +119,43 @@ def counterparties_tab(c, company, year):
         if query.strip().casefold() not in searchable:continue
         if filter_=='입력 확인 필요' and not needs:continue
         if filter_=='메일 누락' and row['email']:continue
-        if filter_ in ('채권','채무') and row['balance_side']!=filter_:continue
         visible.append(row)
     selected_id=st.session_state.get('bc_account_selected_id')
     if selected_id not in [row['id'] for row in records]+[0]:selected_id=records[0]['id'] if records else 0
     st.session_state['bc_account_selected_id']=selected_id
-    widths=[2.2,1.45,.75,1.2,1.4,.8]
+    widths=[2.2,1.45,1.2,1.4,.8]
     with st.container(key='bc_account_head'):
         cols=st.columns(widths,gap='small')
-        for col,label in zip(cols,['거래처명','계정과목','구분','채권채무 잔액','담당자·메일','상태']):col.html(f'<div class="bc-account-head">{label}</div>')
+        for col,label in zip(cols,['거래처명','계정과목','채권잔액','담당자·메일','상태']):col.html(f'<div class="bc-account-head">{label}</div>')
     if not visible:st.info('선택한 조건에 해당하는 계정이 없습니다.')
     for row in visible:
         style='selected' if row['id']==selected_id else 'normal';needs=not row['business_no'] or not row['contact_name'] or not row['email']
         with st.container(key=f'bc_account_row_{style}_{row["id"]}'):
             cols=st.columns(widths,gap='small')
             if cols[0].button(row['counterparty'],key=f'bc_pick_{row["id"]}',use_container_width=True):
-                st.session_state['bc_account_selected_id']=row['id'];st.session_state.pop('_bc_joint_prefill',None);st.rerun()
+                st.session_state['bc_account_selected_id']=row['id'];st.rerun()
             cols[0].html(f'<div class="bc-account-cell" style="text-align:left"><small>{escape(row["business_no"] or "사업자번호 미입력")}</small></div>')
             cols[1].html(f'<div class="bc-account-cell center">{escape(row["account"])}</div>')
-            badge='debt' if row['balance_side']=='채무' else 'review' if row['balance_side']=='미분류' else ''
-            cols[2].html(f'<div class="bc-account-cell center"><span class="bc-account-badge {badge}">{row["balance_side"]}</span></div>')
-            cols[3].html(f'<div class="bc-account-cell">{row["balance"]:,}</div>')
-            cols[4].html(f'<div class="bc-account-cell center">{escape(row["contact_name"] or "-")}<small>{escape(row["email"] or "메일 미입력")}</small></div>')
-            cols[5].html(f'<div class="bc-account-cell center"><span class="bc-account-badge {"review" if needs else ""}">{"확인 필요" if needs else "입력 완료"}</span></div>')
+            cols[2].html(f'<div class="bc-account-cell">{row["balance"]:,}</div>')
+            cols[3].html(f'<div class="bc-account-cell center">{escape(row["contact_name"] or "-")}<small>{escape(row["email"] or "메일 미입력")}</small></div>')
+            cols[4].html(f'<div class="bc-account-cell center"><span class="bc-account-badge {"review" if needs else ""}">{"확인 필요" if needs else "입력 완료"}</span></div>')
     selected=next((row for row in records if row['id']==selected_id),None)
-    old=selected or {'counterparty':'','business_no':'','balance_side':'채권','account':'','balance':0,'contact_name':'','email':'','phone':'','address':'','note':'','version':0,'source':'직접 입력'}
-    lookup=db.joint_companies();lookup_by_name={item['name']:item for item in lookup}
+    old=selected or {'counterparty':'','business_no':'','balance_side':'채권','account':account_names[0],'balance':0,'contact_name':'','email':'','phone':'','address':'','note':'','version':0,'source':'직접 입력'}
     with st.container(key='bc_account_detail'):
         st.html(f'<div class="bc-detail-head"><div><span>{"선택 계정 수정" if selected else "새 계정 등록"}</span><strong>{escape(old["counterparty"] or "거래처를 선택하거나 직접 입력하세요")}</strong></div><span>{escape(old.get("source", ""))}</span></div>')
-        a,b=st.columns([3,1])
-        picked=a.selectbox('공동도급관리대장 업체 검색',[None]+list(lookup_by_name),format_func=lambda x:'직접 입력' if x is None else x,key=f'bc_joint_pick_{selected_id}')
-        if b.button('등록정보 불러오기',disabled=picked is None,use_container_width=True,key=f'bc_joint_load_{selected_id}'):
-            incoming=lookup_by_name[picked];base=dict(old)
-            for field in ('name','business_no','contact_name','email','phone','address'):
-                target='counterparty' if field=='name' else field
-                if incoming.get(field):base[target]=incoming[field]
-            base['joint_lookup']=True;st.session_state['_bc_joint_prefill']=base;st.rerun()
-        values=dict(old);prefill=st.session_state.get('_bc_joint_prefill')
-        if prefill and (not selected or prefill.get('id',selected_id)==selected_id):values.update(prefill)
+        values=dict(old)
         form_epoch=hashlib.sha256(repr(sorted(values.items())).encode()).hexdigest()[:10]
         with st.form(f'bc_account_form_{company}_{year}_{selected_id}_{form_epoch}'):
             a,b=st.columns([2,1]);counterparty=a.text_input('거래처명',values.get('counterparty',''));business_no=b.text_input('사업자등록번호',values.get('business_no',''))
-            a,b,d=st.columns([1,2,1.2]);balance_side=a.selectbox('구분',list(db.SIDES),index=list(db.SIDES).index(values.get('balance_side','채권')));account=b.text_input('계정과목',values.get('account',''));balance=d.number_input('채권채무 잔액',min_value=0,value=int(values.get('balance',0)),step=1)
+            a,b=st.columns([2,1.2]);account=a.selectbox('계정과목',account_names,index=account_names.index(values['account']) if values.get('account') in account_names else 0);balance=b.number_input('채권잔액',min_value=0,value=int(values.get('balance',0)),step=1)
             a,b,d=st.columns(3);contact_name=a.text_input('담당자명',values.get('contact_name',''));email=b.text_input('메일주소',values.get('email',''));phone=d.text_input('연락처',values.get('phone',''))
             address=st.text_input('주소',values.get('address',''));note=st.text_area('비고',values.get('note',''),height=80)
             submitted=st.form_submit_button('계정 정보 저장',type='primary')
         if submitted:
             try:
-                payload=locals();payload['joint_lookup']=bool(values.get('joint_lookup'))
+                payload=locals()
                 saved_id=db.save_counterparty_record(c,company,year,payload,selected_id or None,old.get('version'))
-                st.session_state['bc_account_selected_id']=saved_id;st.session_state.pop('_bc_joint_prefill',None)
+                st.session_state['bc_account_selected_id']=saved_id
                 st.session_state['_bc_notice']=('success','거래처·계정 정보를 저장했습니다.');st.rerun()
             except (ValueError,PermissionError) as exc:st.error(str(exc))
         if selected:
@@ -164,11 +172,26 @@ def profile_tab(c, company):
     st.html('<div class="bc-title">② 공인회계법인·회신처 설정</div>')
     st.caption('회사 기본정보는 법인별로 저장합니다. 공인회계법인과 회신처는 공통정보로 한 번만 등록하며 5개 법인이 함께 사용합니다.')
     row = db.profile(c, company)
+    joint = db.joint_company_profiles()
+    labels = {f"{item['name']} [{item['code']}]": item for item in joint}
+    matched = next((label for label,item in labels.items() if db.normalized(item['name']) == db.normalized(company)), None)
+    picked = st.selectbox('공동도급 당사·관계사 정보', [None] + list(labels),
+        index=([None] + list(labels)).index(matched) if matched in labels else 0,
+        format_func=lambda x: '불러올 회사를 선택하세요' if x is None else x, key=f'bc_profile_joint_{company}')
+    if st.button('선택 회사 정보 불러오기', disabled=picked is None, key=f'bc_profile_joint_load_{company}'):
+        values = dict(row); incoming = labels[picked]
+        for field in ('business_no','representative','address','company_contact','company_email','company_phone','fax'):
+            if incoming.get(field): values[field] = incoming[field]
+        if not values.get('company_phone') and incoming.get('contact_phone'): values['company_phone'] = incoming['contact_phone']
+        st.session_state[f'_bc_profile_prefill_{company}'] = values; st.rerun()
+    row = st.session_state.get(f'_bc_profile_prefill_{company}', row)
     with st.form(f'bc_profile_{company}_{row["version"]}'):
         a, b = st.columns(2)
-        business_no = a.text_input('당사 사업자등록번호', row['business_no']); address = b.text_input('당사 주소', row['address'])
+        business_no = a.text_input('당사 사업자등록번호', row['business_no']); representative = b.text_input('대표자', row['representative'])
+        address = st.text_input('당사 주소', row['address'])
         a, b, d = st.columns(3)
-        company_contact = a.text_input('당사 담당자', row['company_contact']); company_phone = b.text_input('당사 연락처', row['company_phone']); company_email = d.text_input('당사 이메일', row['company_email'])
+        company_contact = a.text_input('당사 담당자', row['company_contact']); company_phone = b.text_input('당사 연락처', row['company_phone']); fax = d.text_input('팩스', row['fax'])
+        company_email = st.text_input('당사 이메일', row['company_email'])
         st.markdown('**5개 법인 공통 공인회계법인·회신처**')
         a, b = st.columns(2)
         audit_firm = a.text_input('공인회계법인명', row['audit_firm']); auditor_name = b.text_input('담당 공인회계사·직원', row['auditor_name'])
@@ -179,6 +202,7 @@ def profile_tab(c, company):
     if submitted:
         try:
             db.save_profile(c, company, locals(), row['version'], row['audit_version'])
+            st.session_state.pop(f'_bc_profile_prefill_{company}', None)
             st.session_state['_bc_notice'] = ('success', '회사 기본정보와 5개 법인 공통 회계법인·회신처를 저장했습니다.'); st.rerun()
         except (ValueError, PermissionError) as exc: st.error(str(exc))
     st.html('<div class="bc-note">공통 공인회계법인 정보는 어느 법인에서 수정해도 5개 법인 전체에 즉시 적용됩니다. 회신은 감사의 독립성을 위해 담당 공인회계법인으로 직접 받도록 확인서에 표시합니다.</div>')
@@ -187,7 +211,7 @@ def profile_tab(c, company):
 def prepare_all(c, company, year, base_date):
     made = 0; skipped = []
     for group in db.group_counterparties(c, company, year):
-        if group['needs_review'] or not group['email']:
+        if not group['email']:
             skipped.append(group['counterparty']); continue
         db.prepare_dispatch(c, company, year, base_date, group); made += 1
     return made, skipped
@@ -205,9 +229,8 @@ def letters_tab(c, company, year, base_date):
         made, skipped = prepare_all(c, company, year, base_date)
         st.session_state['_bc_notice'] = ('success', f'확인서 {made:,}건을 준비했습니다.' + (f' 검토·메일 누락 {len(skipped):,}건은 제외했습니다.' if skipped else '')); st.rerun()
     group = b.selectbox('미리볼 거래처', groups, format_func=lambda x: f"{x['counterparty']} · {x['side']} · {x['total']:,}원", key='bc_group_preview')
-    if group['needs_review']: st.warning('채권·채무 구분이 혼합되거나 미분류된 계정이 있습니다. 잔액표에서 먼저 확인하세요.')
     dispatch = next((row for row in db.dispatches(c, company, year) if row['counterparty'] == group['counterparty']), None)
-    if st.button('선택 거래처 확인서 준비·갱신', disabled=group['needs_review'] or not profile['audit_firm'] or not profile['auditor_email']):
+    if st.button('선택 거래처 확인서 준비·갱신', disabled=not profile['audit_firm'] or not profile['auditor_email']):
         db.prepare_dispatch(c, company, year, base_date, group)
         st.session_state['_bc_notice'] = ('success', '선택 거래처 확인서를 준비했습니다.'); st.rerun()
     if not dispatch:
