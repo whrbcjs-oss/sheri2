@@ -86,6 +86,15 @@ class BalanceConfirmationTests(unittest.TestCase):
         store.save_account_type(self.c, '받을어음')
         self.assertIn('받을어음', [row['name'] for row in store.account_types(self.c)])
 
+    def test_reconnect_can_seed_through_existing_audit_trigger(self):
+        # Reproduces an upgraded database: triggers already exist, while a
+        # newly introduced default row must be inserted before protect().
+        with self.c:
+            self.c.execute("DELETE FROM bc_account_types WHERE name='공사미수금'")
+        self.c.close()
+        self.c = store.connect()
+        self.assertIn('공사미수금', [row['name'] for row in store.account_types(self.c)])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -69,6 +69,12 @@ def infer_side(account, debit=0, credit=0):
 def connect():
     shared.DATA.mkdir(parents=True, exist_ok=True)
     c = shared.connect(shared.DATA / 'balance_confirmation.db')
+    # Existing databases already contain audit triggers. Schema migrations and
+    # default-account seeding therefore need the actor function before protect()
+    # rebuilds/guards the connection.
+    ctx = shared.RUN.get()
+    actor = ctx['user']['username'] if ctx else 'system'
+    c.create_function('current_actor', 0, lambda: actor)
     c.executescript('''
     CREATE TABLE IF NOT EXISTS bc_profiles(
       company_name TEXT PRIMARY KEY,business_no TEXT NOT NULL DEFAULT '',address TEXT NOT NULL DEFAULT '',
