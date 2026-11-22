@@ -1,8 +1,8 @@
 """PC-first receivable/payable confirmation workflow."""
 import hashlib
 from datetime import date
+from html import escape
 
-import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 
@@ -13,7 +13,7 @@ import mail_service as mail
 
 
 CSS = '''<style>
-.bc-hero{background:linear-gradient(125deg,#edf8f5,#e6f3fa);border:1px solid #bcdad2;border-left:6px solid #2d95aa;border-radius:9px;padding:13px 16px;margin:4px 0 12px;color:#244955}.bc-hero small{display:block;color:#4b8782;font-weight:700;letter-spacing:.05em}.bc-hero strong{display:block;font-size:23px;margin-top:2px}.bc-title{background:#eaf5fb;color:#24566e;border-left:6px solid #4b9ac8;border-bottom:2px solid #afd3e5;border-radius:6px 6px 0 0;padding:8px 11px;font-size:18px;font-weight:800;margin:12px 0 8px}.bc-note{background:#eef8f4;border:1px solid #c4e2d6;border-radius:7px;padding:9px 11px;color:#315c50}.bc-warning{background:#fff8df;border:1px solid #e3cc73;border-radius:7px;padding:9px 11px;color:#765b00}.st-key-bc_context{background:#fff;border:1px solid #cfe0dc;border-radius:8px;padding:10px 13px}.st-key-bc_metrics [data-testid="stMetric"]{background:#fff;border:1px solid #d5e3df;border-top:4px solid #4b9ac8;border-radius:8px;padding:9px 11px}.st-key-bc_metrics [data-testid="stMetricValue"]{color:#176b55;font-size:21px}.st-key-bc_editor [data-testid="stDataFrame"]{border:1px solid #bed6cf;border-radius:8px}.st-key-bc_editor input{color:#176ba0!important;font-weight:700!important}.bc-status-ok{color:#087a4f;font-weight:800}.bc-status-warn{color:#8a6900;font-weight:800}.bc-status-bad{color:#c33d40;font-weight:800}</style>'''
+.bc-hero{background:linear-gradient(125deg,#edf8f5,#e6f3fa);border:1px solid #bcdad2;border-left:6px solid #2d95aa;border-radius:9px;padding:13px 16px;margin:4px 0 12px;color:#244955}.bc-hero small{display:block;color:#4b8782;font-weight:700;letter-spacing:.05em}.bc-hero strong{display:block;font-size:23px;margin-top:2px}.bc-title{background:#eaf5fb;color:#24566e;border-left:6px solid #4b9ac8;border-bottom:2px solid #afd3e5;border-radius:6px 6px 0 0;padding:8px 11px;font-size:18px;font-weight:800;margin:12px 0 8px}.bc-note{background:#eef8f4;border:1px solid #c4e2d6;border-radius:7px;padding:9px 11px;color:#315c50}.bc-warning{background:#fff8df;border:1px solid #e3cc73;border-radius:7px;padding:9px 11px;color:#765b00}.st-key-bc_context{background:#fff;border:1px solid #cfe0dc;border-radius:8px;padding:10px 13px}.st-key-bc_metrics [data-testid="stMetric"]{background:#fff;border:1px solid #d5e3df;border-top:4px solid #4b9ac8;border-radius:8px;padding:9px 11px}.st-key-bc_metrics [data-testid="stMetricValue"]{color:#176b55;font-size:21px}.bc-status-ok{color:#087a4f;font-weight:800}.bc-status-warn{color:#8a6900;font-weight:800}.bc-status-bad{color:#c33d40;font-weight:800}.st-key-bc_account_head{background:#eaf2ef;border-top:1px solid #c8dcd5;border-bottom:1px solid #c8dcd5;padding:7px 9px}.bc-account-head{text-align:center;color:#60776c;font-size:12px;font-weight:800}[class*="st-key-bc_account_row_"]{border-bottom:1px solid #dce8e3;padding:7px 9px;background:#fff}[class*="st-key-bc_account_row_selected_"]{background:#e8f4fa;border-left:5px solid #4b9ac8}[class*="st-key-bc_account_row_"] [data-testid="column"]{display:flex;align-items:center;justify-content:flex-end;min-width:0}[class*="st-key-bc_account_row_"] [data-testid="column"]:first-child{justify-content:flex-start}[class*="st-key-bc_account_row_"] button{background:transparent!important;border:0!important;box-shadow:none!important;color:#173f59!important;text-align:left!important;padding:2px 0!important;font-weight:800!important}.bc-account-cell{width:100%;text-align:right;font-size:12px;color:#314b43;font-variant-numeric:tabular-nums;white-space:nowrap}.bc-account-cell.center{text-align:center}.bc-account-cell small{display:block;color:#80918b;font-size:10px}.bc-account-badge{display:inline-block;border-radius:999px;padding:3px 8px;background:#e7f2fb;color:#176ba0;font-weight:800}.bc-account-badge.debt{background:#eee9fb;color:#6247a6}.bc-account-badge.review{background:#fff0a8;color:#725a00}.st-key-bc_account_detail{background:#fff;border:1px solid #cbded7;border-radius:9px;padding:13px 14px;margin-top:12px}.st-key-bc_account_detail input,.st-key-bc_account_detail textarea{color:#176ba0!important;font-weight:700!important}.bc-detail-head{display:flex;justify-content:space-between;align-items:center;background:#edf6fc;border-left:6px solid #4b9ac8;padding:9px 12px;margin-bottom:9px}.bc-detail-head strong{font-size:18px;color:#173f59}.bc-detail-head span{color:#687d77;font-size:12px}@media(max-width:900px){.bc-account-cell,.bc-account-head{font-size:10px}}</style>'''
 
 
 def token():
@@ -55,7 +55,7 @@ def summary_panel(c, company, year):
 
 def counterparties_tab(c, company, year):
     st.html('<div class="bc-title">① 거래처·채권채무 잔액</div>')
-    st.caption('아마란스 자료의 거래처명·계정과목·잔액을 읽습니다. 같은 거래처의 여러 계정은 확인서 한 통에 묶지만 계정별 금액은 합치지 않고 각각 표시합니다.')
+    st.caption('아마란스에서는 거래처명·계정과목·채권잔액만 읽습니다. 사업자번호·담당자·메일·연락처·주소는 공동도급관리대장에서 불러오거나 직접 입력하며, 기존 수동 입력값은 재업로드해도 유지됩니다.')
     uploaded = st.file_uploader('아마란스 거래처별 잔액 XLSX 또는 CSV', type=['xlsx', 'xlsm', 'csv'], key=f'bc_upload_{company}_{year}')
     if uploaded:
         digest = hashlib.sha256(uploaded.getvalue()).hexdigest()
@@ -71,7 +71,14 @@ def counterparties_tab(c, company, year):
             parsed = cached['rows']
         if parsed:
             st.success(f'{uploaded.name}에서 {len(parsed):,}개 계정 행을 찾았습니다.')
-            st.dataframe(pd.DataFrame(parsed).drop(columns=['source'], errors='ignore'), hide_index=True, use_container_width=True, height=220)
+            with st.expander('가져올 계정 미리보기', expanded=True):
+                widths=[2.1,1.6,.8,1.25]
+                with st.container(key='bc_import_head'):
+                    cols=st.columns(widths);labels=['거래처명','계정과목','구분','채권잔액']
+                    for col,label in zip(cols,labels):col.html(f'<div class="bc-account-head">{label}</div>')
+                for index,row in enumerate(parsed[:20]):
+                    cols=st.columns(widths);cols[0].write(row['거래처명']);cols[1].write(row['계정과목']);cols[2].write(row['구분']);cols[3].write(f"{row['채권채무 잔액']:,}원")
+                if len(parsed)>20:st.caption(f'나머지 {len(parsed)-20:,}개 행은 등록 후 아래 목록에서 검색할 수 있습니다.')
             if st.button('가져온 자료 등록·갱신', type='primary', key='bc_import_save'):
                 try:
                     db.save_counterparty_rows(c, company, year, parsed)
@@ -79,38 +86,90 @@ def counterparties_tab(c, company, year):
                     st.session_state.pop(cache_key, None); st.rerun()
                 except (ValueError, PermissionError) as exc: st.error(str(exc))
     records = db.counterparties(c, company, year)
-    frame = pd.DataFrame([{'id': row['id'], '거래처명': row['counterparty'], '사업자번호': row['business_no'], '구분': row['balance_side'],
-        '계정과목': row['account'], '채권채무 잔액': row['balance'], '담당자명': row['contact_name'], '메일주소': row['email'],
-        '연락처': row['phone'], '주소': row['address'], '비고': row['note']} for row in records],
-        columns=['id', '거래처명', '사업자번호', '구분', '계정과목', '채권채무 잔액', '담당자명', '메일주소', '연락처', '주소', '비고'])
-    with st.container(key='bc_editor'):
-        edited = st.data_editor(frame, num_rows='dynamic', hide_index=True, use_container_width=True, height=420,
-          column_config={'id': None, '구분': st.column_config.SelectboxColumn(options=list(db.SIDES), required=True),
-            '채권채무 잔액': st.column_config.NumberColumn(format='%,d', min_value=0, required=True),
-            '거래처명': st.column_config.TextColumn(required=True), '계정과목': st.column_config.TextColumn(required=True)})
-    if st.button('거래처·잔액 수정사항 저장', type='primary', key='bc_grid_save'):
-        try:
-            prepared = []
-            for row in edited.to_dict('records'):
-                if not str(row.get('거래처명', '') or '').strip() and not str(row.get('계정과목', '') or '').strip(): continue
-                prepared.append(row)
-            current_ids = {int(row['id']) for row in prepared if pd.notna(row.get('id')) and str(row.get('id')).strip()}
-            remove = {row['id'] for row in records} - current_ids
-            db.save_counterparty_rows(c, company, year, prepared, remove)
-            st.session_state['_bc_notice'] = ('success', '거래처·잔액 수정사항을 저장했습니다.'); st.rerun()
-        except (ValueError, PermissionError) as exc: st.error(str(exc))
+    controls=st.columns([1.8,.8,.7])
+    query=controls[0].text_input('업체명·계정과목 검색',key=f'bc_account_search_{company}_{year}')
+    filter_=controls[1].selectbox('조회 구분',['전체','입력 확인 필요','메일 누락','채권','채무'],key=f'bc_account_filter_{company}_{year}')
+    if controls[2].button('새 항목 추가',type='primary',use_container_width=True,key='bc_account_new'):
+        st.session_state['bc_account_selected_id']=0;st.session_state.pop('_bc_joint_prefill',None);st.rerun()
+    visible=[]
+    for row in records:
+        searchable=(row['counterparty']+' '+row['account']).casefold()
+        needs=not row['business_no'] or not row['contact_name'] or not row['email']
+        if query.strip().casefold() not in searchable:continue
+        if filter_=='입력 확인 필요' and not needs:continue
+        if filter_=='메일 누락' and row['email']:continue
+        if filter_ in ('채권','채무') and row['balance_side']!=filter_:continue
+        visible.append(row)
+    selected_id=st.session_state.get('bc_account_selected_id')
+    if selected_id not in [row['id'] for row in records]+[0]:selected_id=records[0]['id'] if records else 0
+    st.session_state['bc_account_selected_id']=selected_id
+    widths=[2.2,1.45,.75,1.2,1.4,.8]
+    with st.container(key='bc_account_head'):
+        cols=st.columns(widths,gap='small')
+        for col,label in zip(cols,['거래처명','계정과목','구분','채권채무 잔액','담당자·메일','상태']):col.html(f'<div class="bc-account-head">{label}</div>')
+    if not visible:st.info('선택한 조건에 해당하는 계정이 없습니다.')
+    for row in visible:
+        style='selected' if row['id']==selected_id else 'normal';needs=not row['business_no'] or not row['contact_name'] or not row['email']
+        with st.container(key=f'bc_account_row_{style}_{row["id"]}'):
+            cols=st.columns(widths,gap='small')
+            if cols[0].button(row['counterparty'],key=f'bc_pick_{row["id"]}',use_container_width=True):
+                st.session_state['bc_account_selected_id']=row['id'];st.session_state.pop('_bc_joint_prefill',None);st.rerun()
+            cols[0].html(f'<div class="bc-account-cell" style="text-align:left"><small>{escape(row["business_no"] or "사업자번호 미입력")}</small></div>')
+            cols[1].html(f'<div class="bc-account-cell center">{escape(row["account"])}</div>')
+            badge='debt' if row['balance_side']=='채무' else 'review' if row['balance_side']=='미분류' else ''
+            cols[2].html(f'<div class="bc-account-cell center"><span class="bc-account-badge {badge}">{row["balance_side"]}</span></div>')
+            cols[3].html(f'<div class="bc-account-cell">{row["balance"]:,}</div>')
+            cols[4].html(f'<div class="bc-account-cell center">{escape(row["contact_name"] or "-")}<small>{escape(row["email"] or "메일 미입력")}</small></div>')
+            cols[5].html(f'<div class="bc-account-cell center"><span class="bc-account-badge {"review" if needs else ""}">{"확인 필요" if needs else "입력 완료"}</span></div>')
+    selected=next((row for row in records if row['id']==selected_id),None)
+    old=selected or {'counterparty':'','business_no':'','balance_side':'채권','account':'','balance':0,'contact_name':'','email':'','phone':'','address':'','note':'','version':0,'source':'직접 입력'}
+    lookup=db.joint_companies();lookup_by_name={item['name']:item for item in lookup}
+    with st.container(key='bc_account_detail'):
+        st.html(f'<div class="bc-detail-head"><div><span>{"선택 계정 수정" if selected else "새 계정 등록"}</span><strong>{escape(old["counterparty"] or "거래처를 선택하거나 직접 입력하세요")}</strong></div><span>{escape(old.get("source", ""))}</span></div>')
+        a,b=st.columns([3,1])
+        picked=a.selectbox('공동도급관리대장 업체 검색',[None]+list(lookup_by_name),format_func=lambda x:'직접 입력' if x is None else x,key=f'bc_joint_pick_{selected_id}')
+        if b.button('등록정보 불러오기',disabled=picked is None,use_container_width=True,key=f'bc_joint_load_{selected_id}'):
+            incoming=lookup_by_name[picked];base=dict(old)
+            for field in ('name','business_no','contact_name','email','phone','address'):
+                target='counterparty' if field=='name' else field
+                if incoming.get(field):base[target]=incoming[field]
+            base['joint_lookup']=True;st.session_state['_bc_joint_prefill']=base;st.rerun()
+        values=dict(old);prefill=st.session_state.get('_bc_joint_prefill')
+        if prefill and (not selected or prefill.get('id',selected_id)==selected_id):values.update(prefill)
+        form_epoch=hashlib.sha256(repr(sorted(values.items())).encode()).hexdigest()[:10]
+        with st.form(f'bc_account_form_{company}_{year}_{selected_id}_{form_epoch}'):
+            a,b=st.columns([2,1]);counterparty=a.text_input('거래처명',values.get('counterparty',''));business_no=b.text_input('사업자등록번호',values.get('business_no',''))
+            a,b,d=st.columns([1,2,1.2]);balance_side=a.selectbox('구분',list(db.SIDES),index=list(db.SIDES).index(values.get('balance_side','채권')));account=b.text_input('계정과목',values.get('account',''));balance=d.number_input('채권채무 잔액',min_value=0,value=int(values.get('balance',0)),step=1)
+            a,b,d=st.columns(3);contact_name=a.text_input('담당자명',values.get('contact_name',''));email=b.text_input('메일주소',values.get('email',''));phone=d.text_input('연락처',values.get('phone',''))
+            address=st.text_input('주소',values.get('address',''));note=st.text_area('비고',values.get('note',''),height=80)
+            submitted=st.form_submit_button('계정 정보 저장',type='primary')
+        if submitted:
+            try:
+                payload=locals();payload['joint_lookup']=bool(values.get('joint_lookup'))
+                saved_id=db.save_counterparty_record(c,company,year,payload,selected_id or None,old.get('version'))
+                st.session_state['bc_account_selected_id']=saved_id;st.session_state.pop('_bc_joint_prefill',None)
+                st.session_state['_bc_notice']=('success','거래처·계정 정보를 저장했습니다.');st.rerun()
+            except (ValueError,PermissionError) as exc:st.error(str(exc))
+        if selected:
+            with st.expander('선택 계정 삭제'):
+                reason=st.text_input('삭제 사유',key=f'bc_delete_reason_{selected_id}');confirm=st.checkbox('선택한 계정을 삭제합니다.',key=f'bc_delete_confirm_{selected_id}')
+                if st.button('선택 계정 삭제',disabled=not confirm,key=f'bc_delete_{selected_id}'):
+                    try:
+                        db.delete_counterparty(c,company,year,selected_id,selected['version'],reason);st.session_state['bc_account_selected_id']=0
+                        st.session_state['_bc_notice']=('success','선택 계정을 삭제했습니다.');st.rerun()
+                    except (ValueError,PermissionError) as exc:st.error(str(exc))
 
 
 def profile_tab(c, company):
     st.html('<div class="bc-title">② 공인회계법인·회신처 설정</div>')
-    st.caption('확인서에 표시될 회사 정보와 거래처가 직접 회신할 담당 공인회계법인 정보를 등록합니다.')
+    st.caption('회사 기본정보는 법인별로 저장합니다. 공인회계법인과 회신처는 공통정보로 한 번만 등록하며 5개 법인이 함께 사용합니다.')
     row = db.profile(c, company)
     with st.form(f'bc_profile_{company}_{row["version"]}'):
         a, b = st.columns(2)
         business_no = a.text_input('당사 사업자등록번호', row['business_no']); address = b.text_input('당사 주소', row['address'])
         a, b, d = st.columns(3)
         company_contact = a.text_input('당사 담당자', row['company_contact']); company_phone = b.text_input('당사 연락처', row['company_phone']); company_email = d.text_input('당사 이메일', row['company_email'])
-        st.markdown('**담당 공인회계법인**')
+        st.markdown('**5개 법인 공통 공인회계법인·회신처**')
         a, b = st.columns(2)
         audit_firm = a.text_input('공인회계법인명', row['audit_firm']); auditor_name = b.text_input('담당 공인회계사·직원', row['auditor_name'])
         a, b = st.columns(2)
@@ -119,10 +178,10 @@ def profile_tab(c, company):
         submitted = st.form_submit_button('회계법인·회신처 정보 저장', type='primary')
     if submitted:
         try:
-            db.save_profile(c, company, locals(), row['version'])
-            st.session_state['_bc_notice'] = ('success', '회계법인·회신처 정보를 저장했습니다.'); st.rerun()
+            db.save_profile(c, company, locals(), row['version'], row['audit_version'])
+            st.session_state['_bc_notice'] = ('success', '회사 기본정보와 5개 법인 공통 회계법인·회신처를 저장했습니다.'); st.rerun()
         except (ValueError, PermissionError) as exc: st.error(str(exc))
-    st.html('<div class="bc-note">회신은 감사의 독립성을 위해 당사가 아니라 담당 공인회계법인으로 직접 받도록 확인서에 표시합니다.</div>')
+    st.html('<div class="bc-note">공통 공인회계법인 정보는 어느 법인에서 수정해도 5개 법인 전체에 즉시 적용됩니다. 회신은 감사의 독립성을 위해 담당 공인회계법인으로 직접 받도록 확인서에 표시합니다.</div>')
 
 
 def prepare_all(c, company, year, base_date):

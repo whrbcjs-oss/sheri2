@@ -4,6 +4,7 @@ import io
 import json
 import re
 import secrets
+import sqlite3
 from datetime import date
 
 import pandas as pd
@@ -74,6 +75,10 @@ def connect():
       company_contact TEXT NOT NULL DEFAULT '',company_phone TEXT NOT NULL DEFAULT '',company_email TEXT NOT NULL DEFAULT '',
       audit_firm TEXT NOT NULL DEFAULT '',auditor_name TEXT NOT NULL DEFAULT '',auditor_phone TEXT NOT NULL DEFAULT '',
       auditor_email TEXT NOT NULL DEFAULT '',auditor_address TEXT NOT NULL DEFAULT '',version INTEGER NOT NULL DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS bc_audit_profile(
+      id INTEGER PRIMARY KEY CHECK(id=1),audit_firm TEXT NOT NULL DEFAULT '',auditor_name TEXT NOT NULL DEFAULT '',
+      auditor_phone TEXT NOT NULL DEFAULT '',auditor_email TEXT NOT NULL DEFAULT '',auditor_address TEXT NOT NULL DEFAULT '',
+      version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS bc_counterparties(
       id INTEGER PRIMARY KEY,company_name TEXT NOT NULL,year INTEGER NOT NULL,counterparty TEXT NOT NULL,
       business_no TEXT NOT NULL DEFAULT '',balance_side TEXT NOT NULL,account TEXT NOT NULL,balance INTEGER NOT NULL,
@@ -97,6 +102,11 @@ def connect():
       UNIQUE(company_name,year,counterparty));
     CREATE INDEX IF NOT EXISTS bc_dispatch_case ON bc_dispatches(company_name,year,status);
     ''')
+    if not c.execute('SELECT 1 FROM bc_audit_profile WHERE id=1').fetchone():
+        old = c.execute("""SELECT audit_firm,auditor_name,auditor_phone,auditor_email,auditor_address FROM bc_profiles
+          WHERE audit_firm<>'' OR auditor_email<>'' ORDER BY company_name LIMIT 1""").fetchone()
+        if old: c.execute('INSERT INTO bc_audit_profile VALUES(1,?,?,?,?,?,1)', tuple(old))
+        else: c.execute('INSERT INTO bc_audit_profile(id) VALUES(1)')
     c.commit()
     return shared.protect(c)
 
@@ -120,16 +130,23 @@ def profile(c, company_name):
     row = c.execute('SELECT * FROM bc_profiles WHERE company_name=?', (company_name,)).fetchone()
     fields = ('company_name', 'business_no', 'address', 'company_contact', 'company_phone', 'company_email',
               'audit_firm', 'auditor_name', 'auditor_phone', 'auditor_email', 'auditor_address', 'version')
-    return dict(zip(fields, row)) if row else dict(company_name=company_name, business_no='', address='',
+    result = dict(zip(fields, row)) if row else dict(company_name=company_name, business_no='', address='',
         company_contact='', company_phone='', company_email='', audit_firm='', auditor_name='', auditor_phone='',
         auditor_email='', auditor_address='', version=0)
+    audit = c.execute('SELECT audit_firm,auditor_name,auditor_phone,auditor_email,auditor_address,version FROM bc_audit_profile WHERE id=1').fetchone()
+    if audit:
+        for key, value in zip(('audit_firm','auditor_name','auditor_phone','auditor_email','auditor_address','audit_version'), audit): result[key] = value
+    else: result['audit_version'] = 0
+    return result
 
 
-def save_profile(c, company_name, values, expected):
+def save_profile(c, company_name, values, expected, audit_expected=None):
     from mail_service import address as valid_email
     current = profile(c, company_name)
     if current['version'] != int(expected):
         raise ValueError('회계법인 정보가 다른 작업자에 의해 변경되었습니다. 다시 불러오세요.')
+    if audit_expected is not None and current['audit_version'] != int(audit_expected):
+        raise ValueError('공통 공인회계법인 정보가 다른 작업자에 의해 변경되었습니다. 다시 불러오세요.')
     data = {k: clean(values.get(k, ''), 500 if 'address' in k else 250) for k in
             ('business_no', 'address', 'company_contact', 'company_phone', 'company_email', 'audit_firm',
              'auditor_name', 'auditor_phone', 'auditor_email', 'auditor_address')}
@@ -145,6 +162,30 @@ def save_profile(c, company_name, values, expected):
             c.execute('''INSERT INTO bc_profiles(company_name,business_no,address,company_contact,company_phone,company_email,
               audit_firm,auditor_name,auditor_phone,auditor_email,auditor_address) VALUES(?,?,?,?,?,?,?,?,?,?,?)''',
               (company_name,) + tuple(data[k] for k in data))
+        c.execute('''UPDATE bc_audit_profile SET audit_firm=?,auditor_name=?,auditor_phone=?,auditor_email=?,
+          auditor_address=?,version=version+1 WHERE id=1''', tuple(data[k] for k in
+          ('audit_firm','auditor_name','auditor_phone','auditor_email','auditor_address')))
+
+
+def joint_companies():
+    """Return every reusable joint-venture company field; missing values stay editable."""
+    try:
+        import joint_store
+        c = joint_store.connect()
+        try:
+            result=[]
+            for row in joint_store.companies(c):
+                try: info=json.loads(row.get('info') or '{}')
+                except (TypeError,json.JSONDecodeError): info={}
+                email=c.execute('''SELECT e.email FROM jv_member_emails e JOIN jv_members m ON m.id=e.member_id
+                  WHERE m.company_id=? AND TRIM(e.email)<>'' ORDER BY e.member_id DESC LIMIT 1''',(row['id'],)).fetchone()
+                result.append({'name':row['name'],'code':row['code'],'business_no':info.get('사업자등록번호',''),
+                  'contact_name':info.get('담당자',''),'email':email[0] if email else '',
+                  'phone':info.get('담당자 연락처') or info.get('전화',''),'address':info.get('주소','')})
+            return result
+        finally: c.close()
+    except Exception:
+        return []
 
 
 def counterparties(c, company_name, year, include_deleted=False):
@@ -184,8 +225,12 @@ def save_counterparty_rows(c, company_name, year, records, remove_ids=()):
                                  (company_name, int(year), row['counterparty'], row['account'])).fetchone()
             values = tuple(row[k] for k in ('business_no', 'balance_side', 'balance', 'contact_name', 'email', 'phone', 'address', 'note', 'source'))
             if existing:
-                c.execute('''UPDATE bc_counterparties SET business_no=?,balance_side=?,balance=?,contact_name=?,email=?,phone=?,
-                  address=?,note=?,source=?,deleted=0,version=version+1 WHERE id=?''', values + (existing[0],))
+                if row['source'].startswith('아마란스'):
+                    c.execute('''UPDATE bc_counterparties SET balance_side=?,balance=?,source=?,deleted=0,version=version+1 WHERE id=?''',
+                              (row['balance_side'], row['balance'], row['source'], existing[0]))
+                else:
+                    c.execute('''UPDATE bc_counterparties SET business_no=?,balance_side=?,balance=?,contact_name=?,email=?,phone=?,
+                      address=?,note=?,source=?,deleted=0,version=version+1 WHERE id=?''', values + (existing[0],))
             else:
                 c.execute('''INSERT INTO bc_counterparties(company_name,year,counterparty,business_no,balance_side,account,balance,
                   contact_name,email,phone,address,note,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
@@ -198,11 +243,43 @@ def save_counterparty_rows(c, company_name, year, records, remove_ids=()):
                       (company_name, int(year), *ids))
 
 
+def save_counterparty_record(c, company_name, year, values, id=None, expected=None):
+    row = _validated_record(values, company_name, year)
+    row['source'] = '공동도급 업체명 불러오기' if values.get('joint_lookup') else '직접 입력'
+    data = tuple(row[k] for k in ('counterparty','business_no','balance_side','account','balance','contact_name','email','phone','address','note','source'))
+    try:
+        with c:
+            if id:
+                current = c.execute('SELECT company_name,year,version FROM bc_counterparties WHERE id=? AND deleted=0', (int(id),)).fetchone()
+                if not current or current[0] != company_name or current[1] != int(year): raise ValueError('수정할 계정 자료를 찾을 수 없습니다.')
+                if expected is not None and current[2] != int(expected): raise ValueError('다른 작업자가 이 계정을 수정했습니다. 다시 불러오세요.')
+                c.execute('''UPDATE bc_counterparties SET counterparty=?,business_no=?,balance_side=?,account=?,balance=?,contact_name=?,
+                  email=?,phone=?,address=?,note=?,source=?,version=version+1 WHERE id=?''', data + (int(id),))
+                return int(id)
+            return c.execute('''INSERT INTO bc_counterparties(company_name,year,counterparty,business_no,balance_side,account,balance,
+              contact_name,email,phone,address,note,source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+              (company_name,int(year),row['counterparty'],row['business_no'],row['balance_side'],row['account'],row['balance'],
+               row['contact_name'],row['email'],row['phone'],row['address'],row['note'],row['source'])).lastrowid
+    except sqlite3.IntegrityError as exc:
+        raise ValueError('같은 거래처와 계정과목이 이미 등록되어 있습니다. 기존 항목을 선택해 수정하세요.') from exc
+
+
+def delete_counterparty(c, company_name, year, id, expected, reason):
+    reason = clean(reason, 500)
+    if not reason: raise ValueError('삭제 사유를 입력하세요.')
+    with c:
+        changed = c.execute('''UPDATE bc_counterparties SET deleted=1,note=CASE WHEN note='' THEN ? ELSE note||' / 삭제: '||? END,
+          version=version+1 WHERE id=? AND company_name=? AND year=? AND version=? AND deleted=0''',
+          (reason,reason,int(id),company_name,int(year),int(expected))).rowcount
+        if changed != 1: raise ValueError('계정 자료가 변경되었거나 이미 삭제되었습니다. 다시 불러오세요.')
+
+
 ALIASES = {
     '거래처명': ('거래처명', '회사명', '업체명', '거래처', '상호', '상호명'),
     '사업자번호': ('사업자번호', '사업자등록번호', '등록번호'),
     '계정과목': ('계정과목', '계정명', '계정과목명'),
     '구분': ('구분', '채권채무구분', '채권채무'),
+    '채권잔액': ('채권잔액', '채권금액'), '채무잔액': ('채무잔액', '채무금액'),
     '채권채무 잔액': ('채권채무잔액', '잔액', '기말잔액', '확인잔액'),
     '차변잔액': ('차변잔액', '차변'), '대변잔액': ('대변잔액', '대변'),
     '담당자명': ('담당자명', '담당자', '거래처담당자'),
@@ -241,6 +318,7 @@ def parse_upload(filename, payload):
     frame = frame.dropna(how='all').copy()
     mapping = _column_map(frame.columns)
     missing = [key for key in ('거래처명', '계정과목') if key not in mapping]
+    if not any(key in mapping for key in ('채권잔액','채무잔액','채권채무 잔액','차변잔액','대변잔액')): missing.append('채권잔액')
     if missing:
         raise ValueError('필수 열을 찾지 못했습니다: ' + ', '.join(missing))
     result = []
@@ -251,19 +329,21 @@ def parse_upload(filename, payload):
             continue
         debit = amount(source.get(mapping.get('차변잔액'))) if mapping.get('차변잔액') else 0
         credit = amount(source.get(mapping.get('대변잔액'))) if mapping.get('대변잔액') else 0
-        raw_side = source.get(mapping.get('구분')) if mapping.get('구분') else ''
-        side = str(raw_side).strip() if not pd.isna(raw_side) else ''
-        if side not in SIDES:
-            side = infer_side(account, debit, credit)
-        if mapping.get('채권채무 잔액'):
-            balance = abs(amount(source.get(mapping['채권채무 잔액'])))
+        if mapping.get('채권잔액'):
+            side = '채권'; balance = abs(amount(source.get(mapping['채권잔액'])))
+        elif mapping.get('채무잔액'):
+            side = '채무'; balance = abs(amount(source.get(mapping['채무잔액'])))
         else:
+            raw_side = source.get(mapping.get('구분')) if mapping.get('구분') else ''
+            side = str(raw_side).strip() if not pd.isna(raw_side) else ''
+            if side not in SIDES: side = infer_side(account, debit, credit)
+        if not mapping.get('채권잔액') and not mapping.get('채무잔액') and mapping.get('채권채무 잔액'):
+            balance = abs(amount(source.get(mapping['채권채무 잔액'])))
+        elif not mapping.get('채권잔액') and not mapping.get('채무잔액') and not mapping.get('채권채무 잔액'):
             balance = abs(debit - credit)
         row = {'거래처명': str(counterparty).strip(), '계정과목': str(account).strip(), '구분': side,
                '채권채무 잔액': balance, 'source': f'아마란스 · {filename}'}
-        for target in ('사업자번호', '담당자명', '메일주소', '연락처', '주소', '비고'):
-            value = source.get(mapping.get(target)) if mapping.get(target) else ''
-            row[target] = '' if pd.isna(value) else str(value).strip()
+        for target in ('사업자번호', '담당자명', '메일주소', '연락처', '주소', '비고'): row[target] = ''
         result.append(row)
     if not result:
         raise ValueError('등록할 거래처 잔액 자료가 없습니다.')
