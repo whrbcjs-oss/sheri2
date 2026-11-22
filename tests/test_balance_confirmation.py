@@ -50,6 +50,7 @@ class BalanceConfirmationTests(unittest.TestCase):
         saved = store.dispatch(self.c, dispatch['id']); self.assertEqual(saved['status'], '회신 수신')
         html = report.confirmation_html('다혜건설㈜', {'audit_firm':'한길회계법인','auditor_name':'담당자','auditor_email':'audit@example.com','auditor_phone':'02','auditor_address':'서울'}, saved, group)
         self.assertIn('CF-2025-0001'.encode(), html); self.assertIn('1,000'.encode(), html)
+        self.assertIn('채권채무조회서'.encode(),html);self.assertIn('확 인 통 지'.encode(),html)
 
     def test_manual_reply_keeps_arrival_separate_from_balance_decision(self):
         store.save_counterparty_rows(self.c, '다혜건설㈜', 2025, [{
