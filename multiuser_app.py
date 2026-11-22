@@ -221,6 +221,9 @@ try:
                 elif program=='법인결산':
                     from corporate_close_app import render as render_corporate_close
                     render_corporate_close(user)
+                elif program=='채권채무확인서':
+                    from balance_confirmation_app import render as render_balance_confirmation
+                    render_balance_confirmation(user)
                 elif program=='엘비데크 월별보고':
                     render_monthly(user)
                 else:

@@ -1,10 +1,12 @@
 """Private SMTP settings and explicitly confirmed, idempotent outgoing jobs."""
-import base64,ctypes,hashlib,json,os,re,secrets,smtplib,socket,sqlite3,ssl
+import base64,ctypes,hashlib,imaplib,json,os,re,secrets,smtplib,socket,sqlite3,ssl
 from contextlib import closing
 from datetime import datetime,timezone,timedelta
 from email.message import EmailMessage
+from email import message_from_bytes
+from email.header import decode_header
 from email.policy import SMTP
-from email.utils import format_datetime,make_msgid,formataddr
+from email.utils import format_datetime,make_msgid,formataddr,parsedate_to_datetime
 from pathlib import Path
 import collaboration as shared
 
@@ -148,11 +150,13 @@ def prepare(token,scope,source,to,cc,subject,body,files):
  subject=clean(subject,200);body=str(body)
  if len(body)>100000:raise ValueError('본문은 100,000자 이하로 입력하세요.')
  docs=manifest(files)
- payload=dict(to=to,cc=cc,subject=subject,body=body,files=docs,sender=v['sender'],name=v['name'])
- fingerprint=hashlib.sha256(json.dumps(dict(payload=payload,source=source,config=v['version']),ensure_ascii=False,sort_keys=True).encode()).hexdigest()
+ message_id=make_msgid(domain=v['sender'].split('@')[1])
+ payload=dict(to=to,cc=cc,subject=subject,body=body,files=docs,sender=v['sender'],name=v['name'],message_id=message_id)
+ fingerprint_payload={k:value for k,value in payload.items() if k!='message_id'}
+ fingerprint=hashlib.sha256(json.dumps(dict(payload=fingerprint_payload,source=source,config=v['version']),ensure_ascii=False,sort_keys=True).encode()).hexdigest()
  msg=EmailMessage(policy=SMTP);msg['From']=formataddr((v['name'],v['sender']));msg['To']=', '.join(to)
  if cc:msg['Cc']=', '.join(cc)
- msg['Subject']=subject;msg['Date']=format_datetime(datetime.now(timezone(timedelta(hours=9))));msg['Message-ID']=make_msgid(domain=v['sender'].split('@')[1]);msg.set_content(body)
+ msg['Subject']=subject;msg['Date']=format_datetime(datetime.now(timezone(timedelta(hours=9))));msg['Message-ID']=message_id;msg.set_content(body)
  for f,d in zip(files,docs):
   major,minor=d['mime'].split('/',1);msg.add_attachment(bytes(f['content']),maintype=major,subtype=minor,filename=d['name'])
  eml=msg.as_bytes()
@@ -206,3 +210,56 @@ def draft(token,scope,values=None):
   if values is not None:c.execute('INSERT OR REPLACE INTO drafts VALUES(?,?,?)',(user['username'],scope,json.dumps(values,ensure_ascii=False)))
   r=c.execute('SELECT payload FROM drafts WHERE actor=? AND scope=?',(user['username'],scope)).fetchone()
  return json.loads(r['payload']) if r else {}
+
+def _decode_header(value):
+ out=[]
+ for part,encoding in decode_header(value or ''):
+  if isinstance(part,bytes):
+   for codec in (encoding,'utf-8','cp949','latin1'):
+    if not codec:continue
+    try:part=part.decode(codec);break
+    except (UnicodeDecodeError,LookupError):continue
+   if isinstance(part,bytes):part=part.decode('utf-8','replace')
+  out.append(str(part))
+ return ''.join(out).strip()
+
+def inbox_headers(token,limit=300):
+ """Read recent Nate IMAP headers without changing their read/unread state."""
+ actor(token);v=_config()
+ if 'nate' not in v['host'].lower() and not v['sender'].lower().endswith('@nate.com'):
+  raise ValueError('자동 회신 확인은 현재 네이트 메일 계정만 지원합니다.')
+ client=None
+ try:
+  client=imaplib.IMAP4_SSL('imap.nate.com',993,ssl_context=ssl.create_default_context(),timeout=25)
+  client.login(v['username'],v['password'])
+  status,_=client.select('INBOX',readonly=True)
+  if status!='OK':raise ValueError('네이트 받은메일함을 열 수 없습니다.')
+  status,data=client.uid('search',None,'ALL')
+  if status!='OK':raise ValueError('네이트 받은메일함을 조회할 수 없습니다.')
+  ids=(data[0].split() if data and data[0] else [])[-max(1,min(int(limit),1000)):]
+  result=[]
+  query='(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])'
+  for uid in reversed(ids):
+   status,parts=client.uid('fetch',uid,query)
+   if status!='OK':continue
+   raw=next((part[1] for part in parts if isinstance(part,tuple) and isinstance(part[1],bytes)),b'')
+   if not raw:continue
+   msg=message_from_bytes(raw)
+   date_iso=''
+   try:
+    parsed=parsedate_to_datetime(msg.get('Date',''))
+    if parsed:
+     if parsed.tzinfo is None:parsed=parsed.replace(tzinfo=timezone.utc)
+     date_iso=parsed.astimezone(timezone(timedelta(hours=9))).isoformat(timespec='seconds')
+   except (TypeError,ValueError,OverflowError):pass
+   result.append({'uid':uid.decode('ascii','ignore'),'subject':_decode_header(msg.get('Subject','')),
+    'from':_decode_header(msg.get('From','')),'date_iso':date_iso,'message_id':str(msg.get('Message-ID','')).strip(),
+    'in_reply_to':str(msg.get('In-Reply-To','')).strip(),'references':str(msg.get('References','')).strip()})
+  return result
+ except ValueError:raise
+ except imaplib.IMAP4.error as e:raise ValueError('네이트 IMAP 인증에 실패했습니다. 외부 프로그램 사용 설정과 로그인 정보를 확인하세요.') from e
+ except (OSError,ssl.SSLError) as e:raise ValueError('네이트 받은메일함에 연결할 수 없습니다. 네트워크와 IMAP 설정을 확인하세요.') from e
+ finally:
+  if client:
+   try:client.logout()
+   except Exception:pass

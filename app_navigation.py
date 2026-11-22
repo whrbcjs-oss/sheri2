@@ -1,9 +1,9 @@
 """Shared two-level navigation; existing program routing values stay compatible."""
 import streamlit as st
 
-VERSION = '2026.11.21.50'
+VERSION = '2026.11.22.51'
 HOME = '회계 신고 일정'
-REPORTS = ['엘비데크 월별보고', '자체결산 보고', '법인결산']
+REPORTS = ['엘비데크 월별보고', '자체결산 보고', '법인결산', '채권채무확인서']
 PROGRAMS = [HOME] + REPORTS + ['공동도급 관리대장', '대여금관리', '한국은행 기업경기조사', '현장숙소(전·월세)관리', '주민세(사업소분) 관리']
 CSS = '''<style>
 #root .app-brand-row {display:flex;align-items:center;justify-content:space-between;gap:20px;margin:0 0 16px;}
@@ -23,7 +23,7 @@ CSS = '''<style>
 #root .app-nav-context {font-size:14px;color:#376a54;padding:4px 4px 6px;font-weight:600;}
 #root .app-breadcrumb {font-size:13px;color:#74877e;margin:2px 0 4px;}
 @media(max-width:800px) {#root .st-key-app_primary_navigation {border-radius:20px;}#root .st-key-app_primary_navigation [data-testid="stButton"] button p {font-size:15px!important;white-space:normal;}}
-#root [data-testid="stHeader"]::after {content:"버전 2026.11.20.45";position:absolute;right:144px;top:16px;font-size:11px;color:#7b8b86;pointer-events:none;}
+#root [data-testid="stHeader"]::after {content:"버전 2026.11.22.51";position:absolute;right:144px;top:16px;font-size:11px;color:#7b8b86;pointer-events:none;}
 </style>'''
 
 
@@ -59,8 +59,8 @@ def render():
     if program not in REPORTS:return program
     with st.container(key='app_secondary_navigation'):
         if program in REPORTS:
-            columns = st.columns([1.5,1.2,1.2,3], gap='small')
-            for column, name, key in zip(columns, REPORTS, ['monthly','self','corporate']):
+            columns = st.columns([1.4,1.15,1.05,1.35,2.2], gap='small')
+            for column, name, key in zip(columns, REPORTS, ['monthly','self','corporate','balance_confirmation']):
                 column.button(name, key='app_report_' + key, use_container_width=True,
                     type='primary' if program == name else 'secondary', on_click=select_program, args=(name,))
         else:
