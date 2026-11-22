@@ -1,7 +1,7 @@
 """Shared two-level navigation; existing program routing values stay compatible."""
 import streamlit as st
 
-VERSION = '2026.11.22.54'
+VERSION = '2026.11.22.55'
 HOME = '회계 신고 일정'
 REPORTS = ['엘비데크 월별보고', '자체결산 보고', '법인결산', '채권채무확인서']
 PROGRAMS = [HOME] + REPORTS + ['공동도급 관리대장', '대여금관리', '한국은행 기업경기조사', '현장숙소(전·월세)관리', '주민세(사업소분) 관리']
@@ -23,7 +23,7 @@ CSS = '''<style>
 #root .app-nav-context {font-size:14px;color:#376a54;padding:4px 4px 6px;font-weight:600;}
 #root .app-breadcrumb {font-size:13px;color:#74877e;margin:2px 0 4px;}
 @media(max-width:800px) {#root .st-key-app_primary_navigation {border-radius:20px;}#root .st-key-app_primary_navigation [data-testid="stButton"] button p {font-size:15px!important;white-space:normal;}}
-#root [data-testid="stHeader"]::after {content:"버전 2026.11.22.54";position:absolute;right:144px;top:16px;font-size:11px;color:#7b8b86;pointer-events:none;}
+#root [data-testid="stHeader"]::after {content:"버전 2026.11.22.55";position:absolute;right:144px;top:16px;font-size:11px;color:#7b8b86;pointer-events:none;}
 </style>'''
 
 

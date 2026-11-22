@@ -141,8 +141,8 @@ def company_names():
 
 
 def profile(c, company_name):
-    row = c.execute('SELECT * FROM bc_profiles WHERE company_name=?', (company_name,)).fetchone()
-    result = dict(row) if row else dict(company_name=company_name, business_no='', address='',
+    saved = rows(c, 'SELECT * FROM bc_profiles WHERE company_name=?', (company_name,))
+    result = saved[0] if saved else dict(company_name=company_name, business_no='', address='',
         company_contact='', company_phone='', company_email='', audit_firm='', auditor_name='', auditor_phone='',
         auditor_email='', auditor_address='', representative='',fax='',version=0)
     audit = c.execute('SELECT audit_firm,auditor_name,auditor_phone,auditor_email,auditor_address,version FROM bc_audit_profile WHERE id=1').fetchone()
@@ -177,6 +177,47 @@ def save_profile(c, company_name, values, expected, audit_expected=None):
         c.execute('''UPDATE bc_audit_profile SET audit_firm=?,auditor_name=?,auditor_phone=?,auditor_email=?,
           auditor_address=?,version=version+1 WHERE id=1''', tuple(data[k] for k in
           ('audit_firm','auditor_name','auditor_phone','auditor_email','auditor_address')))
+
+
+def save_company_profile(c, company_name, values, expected):
+    """Save only the selected audited company's own information."""
+    from mail_service import address as valid_email
+    current = profile(c, company_name)
+    if current['version'] != int(expected):
+        raise ValueError('회사 기본정보가 다른 작업자에 의해 변경되었습니다. 다시 불러오세요.')
+    keys = ('business_no', 'representative', 'address', 'company_contact', 'company_phone', 'fax', 'company_email')
+    data = {key: clean(values.get(key, ''), 500 if key == 'address' else 250) for key in keys}
+    if data['company_email']:
+        data['company_email'] = valid_email(data['company_email'])
+    with c:
+        if current['version']:
+            changed = c.execute('''UPDATE bc_profiles SET business_no=?,representative=?,address=?,company_contact=?,
+              company_phone=?,fax=?,company_email=?,version=version+1 WHERE company_name=? AND version=?''',
+              tuple(data[key] for key in keys) + (company_name, int(expected))).rowcount
+            if changed != 1:
+                raise ValueError('회사 기본정보가 변경되었습니다. 다시 불러오세요.')
+        else:
+            c.execute('''INSERT INTO bc_profiles(company_name,business_no,representative,address,company_contact,
+              company_phone,fax,company_email) VALUES(?,?,?,?,?,?,?,?)''',
+              (company_name,) + tuple(data[key] for key in keys))
+
+
+def save_audit_profile(c, values, expected):
+    """Save the single audit-firm/reply profile shared by all audited companies."""
+    from mail_service import address as valid_email
+    current = c.execute('SELECT version FROM bc_audit_profile WHERE id=1').fetchone()
+    if not current or current[0] != int(expected):
+        raise ValueError('공통 공인회계법인 정보가 다른 작업자에 의해 변경되었습니다. 다시 불러오세요.')
+    keys = ('audit_firm', 'auditor_name', 'auditor_phone', 'auditor_email', 'auditor_address')
+    data = {key: clean(values.get(key, ''), 500 if key == 'auditor_address' else 250) for key in keys}
+    if data['auditor_email']:
+        data['auditor_email'] = valid_email(data['auditor_email'])
+    with c:
+        changed = c.execute('''UPDATE bc_audit_profile SET audit_firm=?,auditor_name=?,auditor_phone=?,auditor_email=?,
+          auditor_address=?,version=version+1 WHERE id=1 AND version=?''',
+          tuple(data[key] for key in keys) + (int(expected),)).rowcount
+        if changed != 1:
+            raise ValueError('공통 공인회계법인 정보가 변경되었습니다. 다시 불러오세요.')
 
 
 def joint_company_profiles():

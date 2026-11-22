@@ -68,6 +68,8 @@ class BalanceConfirmationTests(unittest.TestCase):
         first=store.profile(self.c,'다혜건설㈱')
         values={'business_no':'111','representative':'홍길동','address':'춘천','company_contact':'당사담당','company_phone':'033','fax':'033-1','company_email':'company@example.com','audit_firm':'한길회계법인','auditor_name':'이회계사','auditor_phone':'02','auditor_email':'audit@example.com','auditor_address':'서울'}
         store.save_profile(self.c,'다혜건설㈱',values,first['version'],first['audit_version'])
+        saved = store.profile(self.c,'다혜건설㈱')
+        self.assertEqual(saved['representative'], '홍길동'); self.assertEqual(saved['fax'], '033-1')
         self.assertEqual(store.profile(self.c,'㈱효성')['audit_firm'],'한길회계법인')
         import joint_store
         joint=joint_store.connect(); self.addCleanup(joint.close)
@@ -80,6 +82,19 @@ class BalanceConfirmationTests(unittest.TestCase):
         reused=next(row for row in store.joint_company_profiles() if row['name']=='㈱효성')
         self.assertEqual(reused['business_no'],'222-33-44444'); self.assertEqual(reused['company_contact'],'박담당')
         self.assertEqual(reused['company_email'],'joint@example.com'); self.assertEqual(reused['representative'],'박대표'); self.assertEqual(reused['fax'],'02-3333')
+
+    def test_company_and_audit_firm_are_saved_independently(self):
+        initial = store.profile(self.c, '㈱효성')
+        store.save_company_profile(self.c, '㈱효성', {
+            'business_no':'123','representative':'김대표','address':'서울','company_contact':'이담당',
+            'company_phone':'02-1','fax':'02-2','company_email':'company@example.com'}, initial['version'])
+        company_saved = store.profile(self.c, '㈱효성')
+        self.assertEqual(company_saved['representative'], '김대표')
+        store.save_audit_profile(self.c, {'audit_firm':'새로운회계법인','auditor_name':'박회계사',
+            'auditor_phone':'02-3','auditor_email':'audit@example.com','auditor_address':'서울'}, company_saved['audit_version'])
+        after = store.profile(self.c, '㈱효성')
+        self.assertEqual(after['audit_firm'], '새로운회계법인')
+        self.assertEqual(after['representative'], '김대표')
 
     def test_default_and_custom_account_types(self):
         self.assertEqual([row['name'] for row in store.account_types(self.c)], ['공사미수금', '미수금'])

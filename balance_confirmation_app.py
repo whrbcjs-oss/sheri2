@@ -168,9 +168,9 @@ def counterparties_tab(c, company, year):
                     except (ValueError,PermissionError) as exc:st.error(str(exc))
 
 
-def profile_tab(c, company):
-    st.html('<div class="bc-title">② 공인회계법인·회신처 설정</div>')
-    st.caption('회사 기본정보는 법인별로 저장합니다. 공인회계법인과 회신처는 공통정보로 한 번만 등록하며 5개 법인이 함께 사용합니다.')
+def company_profile_tab(c, company):
+    st.html('<div class="bc-title">② 외부감사 대상 회사정보</div>')
+    st.caption('현재 선택한 법인의 기본정보만 저장합니다. 공동도급관리대장의 당사·관계사 정보를 불러온 뒤 빈 항목을 직접 보완하세요.')
     row = db.profile(c, company)
     joint = db.joint_company_profiles()
     labels = {f"{item['name']} [{item['code']}]": item for item in joint}
@@ -192,20 +192,35 @@ def profile_tab(c, company):
         a, b, d = st.columns(3)
         company_contact = a.text_input('당사 담당자', row['company_contact']); company_phone = b.text_input('당사 연락처', row['company_phone']); fax = d.text_input('팩스', row['fax'])
         company_email = st.text_input('당사 이메일', row['company_email'])
-        st.markdown('**5개 법인 공통 공인회계법인·회신처**')
-        a, b = st.columns(2)
-        audit_firm = a.text_input('공인회계법인명', row['audit_firm']); auditor_name = b.text_input('담당 공인회계사·직원', row['auditor_name'])
-        a, b = st.columns(2)
-        auditor_phone = a.text_input('회계법인 연락처', row['auditor_phone']); auditor_email = b.text_input('회신 이메일', row['auditor_email'])
-        auditor_address = st.text_input('회신 주소', row['auditor_address'])
-        submitted = st.form_submit_button('회계법인·회신처 정보 저장', type='primary')
+        submitted = st.form_submit_button('회사 기본정보 저장', type='primary')
     if submitted:
         try:
-            db.save_profile(c, company, locals(), row['version'], row['audit_version'])
+            db.save_company_profile(c, company, locals(), row['version'])
             st.session_state.pop(f'_bc_profile_prefill_{company}', None)
-            st.session_state['_bc_notice'] = ('success', '회사 기본정보와 5개 법인 공통 회계법인·회신처를 저장했습니다.'); st.rerun()
+            st.session_state['_bc_notice'] = ('success', f'{company} 회사 기본정보를 저장했습니다.'); st.rerun()
         except (ValueError, PermissionError) as exc: st.error(str(exc))
-    st.html('<div class="bc-note">공통 공인회계법인 정보는 어느 법인에서 수정해도 5개 법인 전체에 즉시 적용됩니다. 회신은 감사의 독립성을 위해 담당 공인회계법인으로 직접 받도록 확인서에 표시합니다.</div>')
+    st.html('<div class="bc-note">이 화면의 저장은 선택한 회사 정보만 변경하며, 공인회계법인 공통정보에는 영향을 주지 않습니다.</div>')
+
+
+def audit_firm_tab(c, company):
+    st.html('<div class="bc-title">③ 공인회계법인·회신처 관리</div>')
+    st.caption('여기서 한 번 등록한 정보를 5개 외부감사 대상 회사가 함께 사용합니다.')
+    row = db.profile(c, company)
+    with st.form(f'bc_audit_firm_{row["audit_version"]}'):
+        a, b = st.columns(2)
+        audit_firm = a.text_input('공인회계법인명', row['audit_firm'])
+        auditor_name = b.text_input('담당 공인회계사·직원', row['auditor_name'])
+        a, b = st.columns(2)
+        auditor_phone = a.text_input('회계법인 연락처', row['auditor_phone'])
+        auditor_email = b.text_input('회신 이메일', row['auditor_email'])
+        auditor_address = st.text_input('회신 주소', row['auditor_address'])
+        submitted = st.form_submit_button('공인회계법인·회신처 저장', type='primary')
+    if submitted:
+        try:
+            db.save_audit_profile(c, locals(), row['audit_version'])
+            st.session_state['_bc_notice'] = ('success', '5개 법인 공통 공인회계법인·회신처를 저장했습니다.'); st.rerun()
+        except (ValueError, PermissionError) as exc: st.error(str(exc))
+    st.html('<div class="bc-note">확인서의 회신처와 메일 참조 주소에 이 공통정보가 적용됩니다. 회신은 감사의 독립성을 위해 담당 공인회계법인으로 직접 받습니다.</div>')
 
 
 def prepare_all(c, company, year, base_date):
@@ -218,10 +233,10 @@ def prepare_all(c, company, year, base_date):
 
 
 def letters_tab(c, company, year, base_date):
-    st.html('<div class="bc-title">③ 확인서 작성·미리보기</div>')
+    st.html('<div class="bc-title">④ 확인서 작성·미리보기</div>')
     profile = db.profile(c, company); groups = db.group_counterparties(c, company, year)
     if not profile['audit_firm'] or not profile['auditor_email']:
-        st.warning('먼저 ② 회계법인 정보에서 공인회계법인명과 회신 이메일을 등록하세요.')
+        st.warning('먼저 ③ 공인회계법인 관리에서 법인명과 회신 이메일을 등록하세요.')
     if not groups:
         st.info('① 거래처·잔액에서 확인 대상 자료를 등록하세요.'); return
     a, b = st.columns([1, 3])
@@ -241,10 +256,10 @@ def letters_tab(c, company, year, base_date):
 
 
 def sending_tab(c, company, year):
-    st.html('<div class="bc-title">④ 메일 발송</div>')
+    st.html('<div class="bc-title">⑤ 메일 발송</div>')
     dispatches = db.dispatches(c, company, year)
     if not dispatches:
-        st.info('③ 확인서 작성에서 발송 대상 확인서를 먼저 준비하세요.'); return
+        st.info('④ 확인서 작성에서 발송 대상 확인서를 먼저 준비하세요.'); return
     current = st.selectbox('발송할 확인서', dispatches, format_func=lambda x: f"{x['confirmation_no']} · {x['counterparty']} · {x['status']}", key='bc_send_pick')
     group = next((g for g in db.group_counterparties(c, company, year) if g['counterparty'] == current['counterparty']), None)
     if not group: st.error('거래처 원자료를 찾을 수 없습니다.'); return
@@ -288,7 +303,7 @@ def sending_tab(c, company, year):
 
 
 def replies_tab(c, company, year):
-    st.html('<div class="bc-title">⑤ 회신 수신·완료 현황</div>')
+    st.html('<div class="bc-title">⑥ 회신 수신·완료 현황</div>')
     st.caption('네이트 받은메일함은 읽음 상태를 바꾸지 않고 최근 메일의 제목·발신자·회신 연결정보만 확인합니다.')
     st.link_button('네이트 공식 IMAP 설정 안내', 'https://mail3.nate.com/outmail/imap_guide04.html')
     allowed = st.checkbox('네이트 받은메일함을 조회하여 확인번호와 회신 연결정보를 확인합니다.', key='bc_imap_consent')
@@ -324,9 +339,10 @@ def render(user=None):
     companies = db.company_names()
     company, year, base_date = context_header(companies)
     flash(); summary_panel(c, company, year)
-    tabs = st.tabs(['① 거래처·잔액', '② 회계법인 정보', '③ 확인서 작성', '④ 메일 발송', '⑤ 회신 현황'])
+    tabs = st.tabs(['① 거래처·잔액', '② 회사정보', '③ 공인회계법인', '④ 확인서 작성', '⑤ 메일 발송', '⑥ 회신 현황'])
     with tabs[0]: counterparties_tab(c, company, year)
-    with tabs[1]: profile_tab(c, company)
-    with tabs[2]: letters_tab(c, company, year, base_date)
-    with tabs[3]: sending_tab(c, company, year)
-    with tabs[4]: replies_tab(c, company, year)
+    with tabs[1]: company_profile_tab(c, company)
+    with tabs[2]: audit_firm_tab(c, company)
+    with tabs[3]: letters_tab(c, company, year, base_date)
+    with tabs[4]: sending_tab(c, company, year)
+    with tabs[5]: replies_tab(c, company, year)
