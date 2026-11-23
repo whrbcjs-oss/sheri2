@@ -2,6 +2,7 @@ from io import BytesIO
 from pathlib import Path
 import tempfile
 import unittest
+import sqlite3
 from unittest.mock import patch
 
 import pandas as pd
@@ -23,20 +24,20 @@ class BalanceConfirmationTests(unittest.TestCase):
         reset = shared.RUN.set(self.context); self.addCleanup(shared.RUN.reset, reset)
         self.c = store.connect(); self.addCleanup(self.c.close)
 
-    def test_amaranth_import_applies_selected_receivable_account(self):
+    def test_amaranth_import_reads_receivable_and_payable_sample_columns(self):
         frame = pd.DataFrame([
-            {'거래처명': '대한종합건설', '채권잔액': 1000},
-            {'거래처명': '세림산업', '채권잔액': 700}])
+            {'확인대상':'채권','거래처명': '대한종합건설','사업자등록번호':'111-11-11111','계정과목':'공사미수금','확인잔액': 1000},
+            {'확인대상':'채무','거래처명': '세림산업','사업자등록번호':'222-22-22222','계정과목':'외상매입금','확인잔액': 700}])
         payload = BytesIO(); frame.to_excel(payload, index=False)
-        parsed = store.parse_upload('잔액.xlsx', payload.getvalue(), '공사미수금')
-        self.assertEqual([r['계정과목'] for r in parsed], ['공사미수금', '공사미수금'])
-        self.assertEqual([r['구분'] for r in parsed], ['채권', '채권'])
+        parsed = store.parse_upload('잔액.xlsx', payload.getvalue())
+        self.assertEqual([r['계정과목'] for r in parsed], ['공사미수금', '외상매입금'])
+        self.assertEqual([r['구분'] for r in parsed], ['채권', '채무'])
         store.save_counterparty_rows(self.c, '다혜건설㈱', 2025, parsed)
         group = next(g for g in store.group_counterparties(self.c, '다혜건설㈱', 2025) if g['counterparty'] == '대한종합건설')
         self.assertEqual(group['total'], 1000); self.assertEqual(group['side'], '채권')
 
     def test_dispatch_reply_matching_and_print_form(self):
-        store.save_counterparty_rows(self.c, '다혜건설㈱', 2025, [{'거래처명': '대한종합건설', '계정과목': '공사미수금', '채권채무 잔액': 1000, '메일주소': 'a@example.com'}])
+        store.save_counterparty_rows(self.c, '다혜건설㈱', 2025, [{'거래처명': '대한종합건설', '계정과목': '공사미수금','구분':'채권', '채권채무 잔액': 1000, '메일주소': 'a@example.com'}])
         group = store.group_counterparties(self.c, '다혜건설㈱', 2025)[0]
         dispatch = store.prepare_dispatch(self.c, '다혜건설㈱', 2025, '2025-12-31', group)
         store.mark_sent(self.c, dispatch['id'], 'job1', '<sent@example.com>', '서버 접수')
@@ -47,8 +48,25 @@ class BalanceConfirmationTests(unittest.TestCase):
         self.assertIn('CF-2025-0001'.encode(), html); self.assertIn('1,000'.encode(), html)
         self.assertIn('채권채무조회서'.encode(), html); self.assertIn('확 인 통 지'.encode(), html)
 
+    def test_same_account_can_hold_both_sides_and_seal_prints(self):
+        store.save_counterparty_rows(self.c,'다혜건설㈱',2025,[
+          {'거래처명':'혼합거래처','계정과목':'보증금','구분':'채권','채권채무 잔액':100},
+          {'거래처명':'혼합거래처','계정과목':'보증금','구분':'채무','채권채무 잔액':50}])
+        group=store.group_counterparties(self.c,'다혜건설㈱',2025)[0]
+        self.assertEqual(group['side'],'채권·채무');self.assertEqual(len(group['lines']),2)
+        dispatch=store.prepare_dispatch(self.c,'다혜건설㈱',2025,'2025-12-31',group)
+        seal=b'\x89PNG\r\n\x1a\n'+b'test-image'
+        profile={'audit_firm':'한길회계법인','auditor_name':'담당','auditor_phone':'02','auditor_email':'a@example.com','auditor_address':'서울','seal_mime':'image/png','seal_data':seal}
+        html=report.confirmation_html('다혜건설㈱',profile,dispatch,group).decode()
+        self.assertIn('data:image/png;base64,',html);self.assertIn('background:#fff!important',html)
+        self.assertNotIn('<span>혼합거래처</span>',html)
+
+    def test_download_sample_has_required_columns(self):
+        frame=pd.read_excel(BytesIO(store.sample_upload()))
+        self.assertEqual(list(frame.columns),['확인대상','거래처명','사업자등록번호','계정과목','확인잔액'])
+
     def test_manual_reply_keeps_arrival_separate_from_balance_decision(self):
-        store.save_counterparty_rows(self.c, '다혜건설㈱', 2025, [{'거래처명': '세림산업', '계정과목': '미수금', '채권채무 잔액': 700, '메일주소': 'b@example.com'}])
+        store.save_counterparty_rows(self.c, '다혜건설㈱', 2025, [{'거래처명': '세림산업', '계정과목': '외상매입금','구분':'채무', '채권채무 잔액': 700, '메일주소': 'b@example.com'}])
         group = store.group_counterparties(self.c, '다혜건설㈱', 2025)[0]
         dispatch = store.prepare_dispatch(self.c, '다혜건설㈱', 2025, '2025-12-31', group)
         store.mark_reply(self.c, dispatch['id'], '작업자 직접 등록', replied_at='2026-01-11', balance_match='차이 있음', note='상대방 잔액 650원')
@@ -56,9 +74,9 @@ class BalanceConfirmationTests(unittest.TestCase):
         self.assertEqual(saved['status'], '차이 검토'); self.assertEqual(saved['balance_match'], '차이 있음')
 
     def test_reimport_preserves_manual_fields(self):
-        row_id = store.save_counterparty_record(self.c, '다혜건설㈱', 2025, {'counterparty':'대한종합건설','account':'공사미수금','balance':100,'business_no':'123-45-67890','contact_name':'김담당','email':'manual@example.com','phone':'02-1111','address':'서울','note':'직접 확인'})
-        payload = BytesIO(); pd.DataFrame([{'거래처명':'대한종합건설','채권잔액':999}]).to_excel(payload,index=False)
-        parsed = store.parse_upload('아마란스.xlsx', payload.getvalue(), '공사미수금')
+        row_id = store.save_counterparty_record(self.c, '다혜건설㈱', 2025, {'counterparty':'대한종합건설','account':'공사미수금','balance_side':'채권','balance':100,'business_no':'123-45-67890','contact_name':'김담당','email':'manual@example.com','phone':'02-1111','address':'서울','note':'직접 확인'})
+        payload = BytesIO(); pd.DataFrame([{'확인대상':'채권','거래처명':'대한종합건설','사업자등록번호':'123-45-67890','계정과목':'공사미수금','확인잔액':999}]).to_excel(payload,index=False)
+        parsed = store.parse_upload('아마란스.xlsx', payload.getvalue())
         self.assertEqual(parsed[0]['구분'],'채권'); self.assertEqual(parsed[0]['메일주소'],'')
         store.save_counterparty_rows(self.c,'다혜건설㈱',2025,parsed)
         saved = next(row for row in store.counterparties(self.c,'다혜건설㈱',2025) if row['id']==row_id)
@@ -96,8 +114,18 @@ class BalanceConfirmationTests(unittest.TestCase):
         self.assertEqual(after['audit_firm'], '새로운회계법인')
         self.assertEqual(after['representative'], '김대표')
 
+    def test_company_seal_is_stored_and_removed_per_company(self):
+        initial=store.profile(self.c,'㈱효성')
+        png=b'\x89PNG\r\n\x1a\n'+b'seal-payload'
+        store.save_company_seal(self.c,'㈱효성','seal.png','image/png',png,initial['version'])
+        saved=store.profile(self.c,'㈱효성')
+        import base64
+        self.assertEqual(base64.b64decode(saved['seal_data']),png);self.assertEqual(saved['seal_mime'],'image/png')
+        store.delete_company_seal(self.c,'㈱효성',saved['version'])
+        self.assertIsNone(store.profile(self.c,'㈱효성')['seal_data'])
+
     def test_default_and_custom_account_types(self):
-        self.assertEqual([row['name'] for row in store.account_types(self.c)], ['공사미수금', '미수금'])
+        self.assertEqual([row['name'] for row in store.account_types(self.c)], ['공사미수금', '미수금','외상매입금','미지급금'])
         store.save_account_type(self.c, '받을어음')
         self.assertIn('받을어음', [row['name'] for row in store.account_types(self.c)])
 
@@ -109,6 +137,20 @@ class BalanceConfirmationTests(unittest.TestCase):
         self.c.close()
         self.c = store.connect()
         self.assertIn('공사미수금', [row['name'] for row in store.account_types(self.c)])
+
+    def test_old_counterparty_unique_schema_is_migrated_without_data_loss(self):
+        self.c.close();path=shared.DATA/'balance_confirmation.db';path.unlink()
+        raw=sqlite3.connect(path)
+        raw.execute('''CREATE TABLE bc_counterparties(id INTEGER PRIMARY KEY,company_name TEXT NOT NULL,year INTEGER NOT NULL,
+          counterparty TEXT NOT NULL,business_no TEXT NOT NULL DEFAULT '',balance_side TEXT NOT NULL,account TEXT NOT NULL,
+          balance INTEGER NOT NULL,contact_name TEXT NOT NULL DEFAULT '',email TEXT NOT NULL DEFAULT '',phone TEXT NOT NULL DEFAULT '',
+          address TEXT NOT NULL DEFAULT '',note TEXT NOT NULL DEFAULT '',source TEXT NOT NULL DEFAULT '직접 입력',
+          version INTEGER NOT NULL DEFAULT 1,deleted INTEGER NOT NULL DEFAULT 0,UNIQUE(company_name,year,counterparty,account))''')
+        raw.execute("INSERT INTO bc_counterparties(company_name,year,counterparty,balance_side,account,balance) VALUES('회사',2025,'거래처','채권','보증금',100)")
+        raw.commit();raw.close();self.c=store.connect()
+        self.assertEqual(store.counterparties(self.c,'회사',2025)[0]['balance'],100)
+        store.save_counterparty_record(self.c,'회사',2025,{'counterparty':'거래처','balance_side':'채무','account':'보증금','balance':50})
+        self.assertEqual(len(store.counterparties(self.c,'회사',2025)),2)
 
 
 if __name__ == '__main__':
