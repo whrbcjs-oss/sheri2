@@ -36,6 +36,14 @@ def normalized(value):
     return ''.join(ch for ch in str(value or '').casefold() if ch.isalnum())
 
 
+def company_key(value):
+    """Match company spelling variants without changing the selected company identity."""
+    text=str(value or '').casefold()
+    for token in ('주식회사','유한회사','합자회사','합명회사','㈱','(주)','（주）'):
+        text=text.replace(token,'')
+    return normalized(text)
+
+
 def amount(value):
     if value is None or value == '':
         return 0

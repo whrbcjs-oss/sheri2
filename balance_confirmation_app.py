@@ -175,21 +175,24 @@ def counterparties_tab(c, company, year):
 
 def company_profile_tab(c, company):
     st.html('<div class="bc-title">② 외부감사 대상 회사정보</div>')
-    st.caption('현재 선택한 법인의 기본정보만 저장합니다. 공동도급관리대장의 당사·관계사 정보를 불러온 뒤 빈 항목을 직접 보완하세요.')
-    row = db.profile(c, company)
+    st.caption(f'작업 기준은 상단 대상 법인 `{company}`입니다. 회사정보와 직인은 이 법인에만 저장됩니다.')
+    stored_row = db.profile(c, company)
     joint = db.joint_company_profiles()
-    labels = {f"{item['name']} [{item['code']}]": item for item in joint}
-    matched = next((label for label,item in labels.items() if db.normalized(item['name']) == db.normalized(company)), None)
-    picked = st.selectbox('공동도급 당사·관계사 정보', [None] + list(labels),
-        index=([None] + list(labels)).index(matched) if matched in labels else 0,
-        format_func=lambda x: '불러올 회사를 선택하세요' if x is None else x, key=f'bc_profile_joint_{company}')
-    if st.button('선택 회사 정보 불러오기', disabled=picked is None, key=f'bc_profile_joint_load_{company}'):
-        values = dict(row); incoming = labels[picked]
+    matches=[item for item in joint if db.company_key(item['name'])==db.company_key(company)]
+    incoming=matches[0] if len(matches)==1 else None
+    if incoming:
+        st.html(f'<div class="bc-note">자동 연결: <b>{escape(company)}</b> ↔ 공동도급 <b>{escape(incoming["name"])} [{escape(incoming["code"])}]</b></div>')
+    elif len(matches)>1:
+        st.warning(f'{company}과 같은 이름의 당사·관계사가 여러 개입니다. 공동도급관리대장의 회사명을 구분해 주세요.')
+    else:
+        st.warning(f'공동도급관리대장에서 {company}과 일치하는 당사·관계사를 찾지 못했습니다. 직접 입력한 회사정보를 사용합니다.')
+    if st.button(f'{company} 정보 불러오기', disabled=incoming is None, key=f'bc_profile_joint_load_{company}'):
+        values = dict(stored_row)
         for field in ('business_no','representative','address','company_contact','company_email','company_phone','fax'):
             if incoming.get(field): values[field] = incoming[field]
         if not values.get('company_phone') and incoming.get('contact_phone'): values['company_phone'] = incoming['contact_phone']
         st.session_state[f'_bc_profile_prefill_{company}'] = values; st.rerun()
-    row = st.session_state.get(f'_bc_profile_prefill_{company}', row)
+    row = st.session_state.get(f'_bc_profile_prefill_{company}', stored_row)
     with st.form(f'bc_profile_{company}_{row["version"]}'):
         a, b = st.columns(2)
         business_no = a.text_input('당사 사업자등록번호', row['business_no']); representative = b.text_input('대표자', row['representative'])
@@ -206,20 +209,24 @@ def company_profile_tab(c, company):
         except (ValueError, PermissionError) as exc: st.error(str(exc))
     st.markdown('**회사별 직인**')
     a,b=st.columns([1,2])
-    if row.get('seal_data'):
-        seal_bytes=base64.b64decode(row['seal_data']) if isinstance(row['seal_data'],str) else row['seal_data']
-        a.image(seal_bytes,caption=row.get('seal_name') or f'{company} 직인',width=100)
+    if stored_row.get('seal_data'):
+        seal_bytes=base64.b64decode(stored_row['seal_data']) if isinstance(stored_row['seal_data'],str) else stored_row['seal_data']
+        a.image(seal_bytes,caption=stored_row.get('seal_name') or f'{company} 직인',width=100)
     else:a.info('등록된 직인이 없습니다.')
-    seal_file=b.file_uploader('PNG 또는 JPG 직인 이미지 (2MB 이하)',type=['png','jpg','jpeg'],key=f'bc_seal_{company}_{row["version"]}')
+    b.markdown(f'**직인 저장 대상: {company}**')
+    seal_file=b.file_uploader(f'{company} PNG 또는 JPG 직인 (2MB 이하)',type=['png','jpg','jpeg'],key=f'bc_seal_{company}_{stored_row["version"]}')
     save_col,delete_col=st.columns(2)
     if save_col.button('직인 등록·교체',disabled=seal_file is None,type='primary',use_container_width=True):
         try:
-            db.save_company_seal(c,company,seal_file.name,seal_file.type,seal_file.getvalue(),row['version'])
+            db.save_company_seal(c,company,seal_file.name,seal_file.type,seal_file.getvalue(),stored_row['version'])
+            if f'_bc_profile_prefill_{company}' in st.session_state:st.session_state[f'_bc_profile_prefill_{company}']['version']=stored_row['version']+1
             st.session_state['_bc_notice']=('success',f'{company} 직인을 저장했습니다.');st.rerun()
         except (ValueError,PermissionError) as exc:st.error(str(exc))
-    if delete_col.button('직인 삭제',disabled=not row.get('seal_data'),use_container_width=True):
+    if delete_col.button(f'{company} 직인 삭제',disabled=not stored_row.get('seal_data'),use_container_width=True):
         try:
-            db.delete_company_seal(c,company,row['version']);st.session_state['_bc_notice']=('success',f'{company} 직인을 삭제했습니다.');st.rerun()
+            db.delete_company_seal(c,company,stored_row['version'])
+            if f'_bc_profile_prefill_{company}' in st.session_state:st.session_state[f'_bc_profile_prefill_{company}']['version']=stored_row['version']+1
+            st.session_state['_bc_notice']=('success',f'{company} 직인을 삭제했습니다.');st.rerun()
         except (ValueError,PermissionError) as exc:st.error(str(exc))
     st.html('<div class="bc-note">이 화면의 저장은 선택한 회사 정보만 변경하며, 공인회계법인 공통정보에는 영향을 주지 않습니다.</div>')
 

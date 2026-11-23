@@ -121,8 +121,14 @@ class BalanceConfirmationTests(unittest.TestCase):
         saved=store.profile(self.c,'㈱효성')
         import base64
         self.assertEqual(base64.b64decode(saved['seal_data']),png);self.assertEqual(saved['seal_mime'],'image/png')
+        self.assertIsNone(store.profile(self.c,'다혜건설㈱')['seal_data'])
         store.delete_company_seal(self.c,'㈱효성',saved['version'])
         self.assertIsNone(store.profile(self.c,'㈱효성')['seal_data'])
+
+    def test_company_name_variants_match_the_same_own_company(self):
+        self.assertEqual(store.company_key('㈱효성'),store.company_key('(주)효성'))
+        self.assertEqual(store.company_key('주식회사 효성'),store.company_key('효성'))
+        self.assertNotEqual(store.company_key('효성'),store.company_key('한길'))
 
     def test_default_and_custom_account_types(self):
         self.assertEqual([row['name'] for row in store.account_types(self.c)], ['공사미수금', '미수금','외상매입금','미지급금'])
